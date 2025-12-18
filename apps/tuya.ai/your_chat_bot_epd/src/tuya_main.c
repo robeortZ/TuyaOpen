@@ -182,9 +182,8 @@ void user_event_handler_on(tuya_iot_client_t *client, tuya_event_msg_t *event)
             ai_audio_player_play_alert(AI_AUDIO_ALERT_NETWORK_CONNECTED);
             ai_audio_volume_upload();
             
-            // 连接云端后延迟几秒获取天气（等待时间同步完成）
-            tal_system_sleep(3000);
-            __app_update_weather();
+            // 标记需要更新天气（不阻塞，由定时器回调处理）
+            s_last_weather_update = 0;  // 重置，确保下次定时器回调时更新天气
         }
         break;
 

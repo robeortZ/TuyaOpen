@@ -189,16 +189,23 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     
     // 计算全屏缓冲区大小
     UDOUBLE Imagesize = ((SCREEN_WIDTH % 8 == 0) ? (SCREEN_WIDTH / 8) : (SCREEN_WIDTH / 8 + 1)) * SCREEN_HEIGHT;
+    PR_DEBUG("EPD layout: need %lu bytes\r\n", (unsigned long)Imagesize);
+    
     if ((BlackImage_buf = (UBYTE *)tkl_system_psram_malloc(Imagesize)) == NULL) {
         PR_DEBUG("Failed to apply for black memory...\r\n");
+        s_epd_initialized = 1;  // 标记为已初始化，避免后续重复尝试
         return;
     }
+    PR_DEBUG("EPD layout: memory allocated\r\n");
 
     // 初始化全屏模式
     EPD_7IN5_V2_Init();
+    PR_DEBUG("EPD layout: EPD_7IN5_V2_Init done\r\n");
+    
     Paint_NewImage(BlackImage_buf, SCREEN_WIDTH, SCREEN_HEIGHT, 0, WHITE);
     Paint_SelectImage(BlackImage_buf);
     Paint_Clear(WHITE);
+    PR_DEBUG("EPD layout: Paint initialized\r\n");
 
     // ========== 绘制状态栏背景 ==========
     Paint_DrawRectangle(STATUS_BAR_X, STATUS_BAR_Y, 
@@ -248,10 +255,13 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
                    BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
 
     // ========== 绘制天气信息区域 ==========
+    PR_DEBUG("EPD layout: drawing weather info\r\n");
     draw_weather_info();
 
     // 显示整个画面
+    PR_DEBUG("EPD layout: calling EPD_7IN5_V2_Display\r\n");
     EPD_7IN5_V2_Display(BlackImage_buf);
+    PR_DEBUG("EPD layout: display done\r\n");
     DEV_Delay_ms(500);
 
     // 释放缓冲区
@@ -267,8 +277,15 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
  ******************************************************************************/
 void EPD_7in5_update_time(const char *time_str)
 {
+    PR_DEBUG("EPD_7in5_update_time called, time_str=%s\r\n", time_str ? time_str : "NULL");
+    
     if (time_str == NULL) {
         PR_DEBUG("time_str is NULL\r\n");
+        return;
+    }
+    
+    if (!s_epd_initialized) {
+        PR_DEBUG("EPD not initialized yet\r\n");
         return;
     }
 
@@ -277,6 +294,8 @@ void EPD_7in5_update_time(const char *time_str)
         PR_DEBUG("Time unchanged, skip refresh\r\n");
         return;
     }
+    
+    PR_DEBUG("Updating time from '%s' to '%s'\r\n", s_current_time, time_str);
 
     // 计算时间显示区域大小
     UWORD time_width = Font72.Width * 5;   // HH:MM = 5个字符
@@ -512,17 +531,21 @@ void EPD_7in5_show_time(char *time_str)
 OPERATE_RET EPD_7in5_V2_init(void)
 {
     if (DEV_Module_Init() != 0) {
+        PR_DEBUG("DEV_Module_Init failed\r\n");
         return -1;
     }
 
     PR_DEBUG("e-Paper Init and Clear...\r\n");
     EPD_7IN5_V2_Init();
+    PR_DEBUG("e-Paper EPD_7IN5_V2_Init done\r\n");
     EPD_7IN5_V2_Clear();
+    PR_DEBUG("e-Paper EPD_7IN5_V2_Clear done\r\n");
     DEV_Delay_ms(500);
 
     // 初始化T形布局（日期、时间、WiFi状态）
-    // 这里使用默认值，实际使用时应该传入真实的日期时间
+    PR_DEBUG("Calling EPD_7in5_init_layout...\r\n");
     EPD_7in5_init_layout("2024-12-18 Wed", "15:30", 1);
+    PR_DEBUG("EPD_7in5_V2_init completed\r\n");
     
     return OPRT_OK;
 }
