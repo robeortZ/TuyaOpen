@@ -1,33 +1,85 @@
-English | [简体中文](./RAEDME_zh.md)
+English | [简体中文](./README_zh.md)
 
-# your_chat_bot
-[your_chat_bot](https://github.com/tuya/TuyaOpen/tree/master/apps/tuya.ai/your_chat_bot) is an open-source large model intelligent chatbot based on tuya.ai. It collects voice through a microphone, performs speech recognition, and enables conversation, interaction, and banter. You can also see real-time chat content on the screen.
+# your_chat_bot_epd
 
-**Note: Switching between TUYA AI V1.0 and V2.0 requires removing the device and clearing the data on the APP before use.**
+[your_chat_bot_epd](https://github.com/tuya/TuyaOpen/tree/master/apps/tuya.ai/your_chat_bot_epd) is an open-source large model intelligent chatbot based on tuya.ai, designed specifically for **e-Paper (EPD) display**. It features a T-shaped layout with status bar, image area, and time display, with partial refresh support for efficient updates.
 
-## Supported Features
+## Features
 
-1. AI intelligent conversation
-2. Button wake-up/Voice wake-up, turn-based dialogue, supports voice interruption (hardware support required)
-3. Expression display
-4. Supports LCD for displaying real-time chat content and supports viewing chat content in real-time on the APP side
-5. Quick Bluetooth network connection to the router
-6. Real-time switching of AI entity roles on the APP side
+1. **E-Paper Display Support**
+   - 7.5 inch e-Paper display (Waveshare EPD_7IN5_V2)
+   - T-shaped layout design
+   - Partial refresh for time updates (every minute)
+   - Full refresh for background initialization
 
+2. **T-Layout Design**
+   ```
+   +--------------------------------------------------+
+   |     Status Bar (Date + WiFi Status)              | 50px
+   +--------------------------------------------------+
+   |                      |                           |
+   |     Image Area       |      Time Display         |
+   |      (Left)          |        (Right)            |
+   |      350x430         |        450x430            |
+   |                      |                           |
+   +----------------------+---------------------------+
+   ```
 
-![](../../../docs/images/apps/your_chat_bot.png)
+3. AI intelligent conversation
+4. Button wake-up / Voice wake-up
+5. Quick Bluetooth network connection
 
-## Hardware Dependencies
-1. Audio capture
-2. Audio playback
+## Hardware Requirements
+
+1. Audio capture (microphone)
+2. Audio playback (speaker)
+3. **E-Paper Display** (7.5 inch recommended)
+   - Waveshare 7.5inch e-Paper V2 (800×480)
+   - SPI interface connection
 
 ## Supported Hardware
-| Model | Description | Reset Method |
-| --- | --- | --- |
-| TUYA T5AI_Board Development Board | [https://developer.tuya.com/en/docs/iot-device-dev/T5-E1-IPEX-development-board?id=Ke9xehig1cabj](https://developer.tuya.com/en/docs/iot-device-dev/T5-E1-IPEX-development-board?id=Ke9xehig1cabj) | Reset by restarting 3 times |
-| TUYA T5AI_EVB Board | [https://oshwhub.com/flyingcys/t5ai_evb](https://oshwhub.com/flyingcys/t5ai_evb) | Reset by restarting 3 times |
+
+| Model | Config | Description | Reset Method |
+| --- | --- | --- | --- |
+| TUYA T5AI_Core + 7.5" EPD | TUYA_T5AI_CORE.config | T5AI Core board with e-Paper display | Restart 3 times |
+| TUYA T5AI_Board + 7.5" EPD | TUYA_T5AI_BOARD_LCD_3.5.config | T5AI Board with e-Paper display | Restart 3 times |
+
+## Pin Configuration (Default for T5AI)
+
+| Function | GPIO Pin |
+| --- | --- |
+| EPD_RST | GPIO_26 |
+| EPD_DC | GPIO_24 |
+| EPD_CS | GPIO_16 |
+| EPD_BUSY | GPIO_25 |
+| SPI_CLK | GPIO_14 |
+| SPI_MOSI | GPIO_17 |
 
 ## Compilation
-1. Run the `tos config_choice` command to select the current development board in use.
-2. If you need to modify the configuration, run the `tos menuconfig` command to make changes.
-3. Run the `tos build` command to compile the project.
+
+1. Run `tos config_choice` command to select the development board.
+2. If you need to modify the configuration, run `tos menuconfig` command.
+3. Run `tos build` command to compile the project.
+
+## API Reference
+
+### Display Functions
+
+| Function | Description |
+| --- | --- |
+| `EPD_7in5_V2_init()` | Initialize e-Paper display and draw T-layout |
+| `EPD_7in5_update_time(time_str)` | Partial refresh to update time display |
+| `EPD_7in5_update_status(date_str, wifi)` | Partial refresh to update status bar |
+| `EPD_7in5_init_layout(date, time, wifi)` | Full refresh to initialize complete layout |
+
+### Refresh Strategy
+
+- **Time Display**: Partial refresh every minute (fast, low power)
+- **Status Bar**: Partial refresh when date changes
+- **Background**: Full refresh only on initialization
+
+## Notes
+
+1. E-Paper displays have limited refresh cycles. Avoid frequent full refreshes.
+2. Partial refresh is recommended for frequently updated content.
+3. The display may show ghosting after many partial refreshes; occasional full refresh can clear this.
