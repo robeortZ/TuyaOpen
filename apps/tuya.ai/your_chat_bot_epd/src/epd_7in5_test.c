@@ -22,9 +22,9 @@ extern const unsigned char gImage_7in5_V2_ry[];
  * +--------------------------------------------------+
  * |          状态栏（日期 + WiFi状态）               |  高度: 50px
  * +--------------------------------------------------+
- * |                      |                           |
- * |      图片区域        |       时间区域            |
- * |      (左侧)          |       (右侧)              |
+ * |                      |  时间                     |
+ * |      图片区域        |---------------------------|
+ * |      (左侧)          |  天气信息（气温/湿度等）  |
  * |      350x430         |       450x430             |
  * |                      |                           |
  * +----------------------+---------------------------+
@@ -56,9 +56,15 @@ extern const unsigned char gImage_7in5_V2_ry[];
 #define TIME_AREA_WIDTH     (SCREEN_WIDTH - DIVIDER_X)  // 450
 #define TIME_AREA_HEIGHT    (SCREEN_HEIGHT - STATUS_BAR_HEIGHT)  // 430
 
-// 时间显示位置（在时间区域内居中）
-#define TIME_DISPLAY_X      (TIME_AREA_X + 50)
-#define TIME_DISPLAY_Y      (TIME_AREA_Y + 150)
+// 时间显示位置（在时间区域内）
+#define TIME_DISPLAY_X      (TIME_AREA_X + 80)
+#define TIME_DISPLAY_Y      (TIME_AREA_Y + 40)
+
+// 天气区域（在时间下方）
+#define WEATHER_AREA_X      (TIME_AREA_X + 20)
+#define WEATHER_AREA_Y      (TIME_DISPLAY_Y + 100)
+#define WEATHER_AREA_WIDTH  (TIME_AREA_WIDTH - 40)
+#define WEATHER_AREA_HEIGHT 280
 
 // 日期显示位置（在状态栏内）
 #define DATE_DISPLAY_X      20
@@ -78,6 +84,101 @@ static UBYTE s_wifi_connected = 0;
 static char s_current_time[16] = {0};
 static char s_current_date[32] = {0};
 
+/*******************************************************************************
+ * 天气数据结构
+ ******************************************************************************/
+typedef struct {
+    int temp;           // 温度 (摄氏度)
+    int humi;           // 湿度 (%)
+    int weather_code;   // 天气代码
+    char weather_desc[32];  // 天气描述
+    char wind_dir[32];      // 风向
+    char wind_speed[32];    // 风速
+    int high_temp;      // 今日最高温
+    int low_temp;       // 今日最低温
+} epd_weather_data_t;
+
+static epd_weather_data_t s_weather_data = {0};
+static UBYTE s_weather_valid = 0;
+
+/*******************************************************************************
+ * 天气代码转描述
+ ******************************************************************************/
+static const char* weather_code_to_desc(int code)
+{
+    switch(code) {
+        case 120: return "Sunny";
+        case 146: return "Clear";
+        case 119: return "MostlyClear";
+        case 129: return "PartlyCloudy";
+        case 142: return "Cloudy";
+        case 132: return "Overcast";
+        case 139: return "LightRain";
+        case 112: return "Rain";
+        case 141: return "ModerateRain";
+        case 101: return "HeavyRain";
+        case 143: return "ThunderShower";
+        case 104: return "LightSnow";
+        case 105: return "Snow";
+        case 124: return "HeavySnow";
+        case 121: return "Fog";
+        case 140: return "Haze";
+        default:  return "Unknown";
+    }
+}
+
+
+/*******************************************************************************
+ * 绘制天气信息到缓冲区
+ ******************************************************************************/
+static void draw_weather_info(void)
+{
+    // 天气区域标题
+    Paint_DrawString_EN(WEATHER_AREA_X, WEATHER_AREA_Y, "Weather", &Font24, WHITE, BLACK);
+    
+    // 分隔线
+    Paint_DrawLine(WEATHER_AREA_X, WEATHER_AREA_Y + 30, 
+                   WEATHER_AREA_X + WEATHER_AREA_WIDTH, WEATHER_AREA_Y + 30, 
+                   BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+    
+    if (s_weather_valid) {
+        char buf[64];
+        int y_offset = WEATHER_AREA_Y + 50;
+        
+        // 天气描述（大字体）
+        Paint_DrawString_EN(WEATHER_AREA_X, y_offset, s_weather_data.weather_desc, &Font24, WHITE, BLACK);
+        y_offset += 40;
+        
+        // 当前温度（大字体）
+        snprintf(buf, sizeof(buf), "%d C", s_weather_data.temp);
+        Paint_DrawString_EN(WEATHER_AREA_X, y_offset, "Temp:", &Font20, WHITE, BLACK);
+        Paint_DrawString_EN(WEATHER_AREA_X + 80, y_offset, buf, &Font24, WHITE, BLACK);
+        y_offset += 35;
+        
+        // 高低温
+        snprintf(buf, sizeof(buf), "H:%d  L:%d", s_weather_data.high_temp, s_weather_data.low_temp);
+        Paint_DrawString_EN(WEATHER_AREA_X, y_offset, buf, &Font20, WHITE, BLACK);
+        y_offset += 35;
+        
+        // 湿度
+        snprintf(buf, sizeof(buf), "Humidity: %d%%", s_weather_data.humi);
+        Paint_DrawString_EN(WEATHER_AREA_X, y_offset, buf, &Font20, WHITE, BLACK);
+        y_offset += 35;
+        
+        // 风向风速
+        snprintf(buf, sizeof(buf), "Wind: %s", s_weather_data.wind_dir);
+        Paint_DrawString_EN(WEATHER_AREA_X, y_offset, buf, &Font20, WHITE, BLACK);
+        y_offset += 30;
+        
+        snprintf(buf, sizeof(buf), "Speed: %s", s_weather_data.wind_speed);
+        Paint_DrawString_EN(WEATHER_AREA_X, y_offset, buf, &Font20, WHITE, BLACK);
+    } else {
+        // 无天气数据时显示等待信息
+        Paint_DrawString_EN(WEATHER_AREA_X, WEATHER_AREA_Y + 60, "Loading...", &Font24, WHITE, BLACK);
+        Paint_DrawString_EN(WEATHER_AREA_X, WEATHER_AREA_Y + 100, "Connect to cloud", &Font16, WHITE, BLACK);
+        Paint_DrawString_EN(WEATHER_AREA_X, WEATHER_AREA_Y + 125, "to get weather", &Font16, WHITE, BLACK);
+    }
+}
 
 /*******************************************************************************
  * 初始化T形布局背景（全屏刷新）
@@ -112,7 +213,6 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     
     // 绘制WiFi状态图标
     s_wifi_connected = wifi_connected;
-    // 简化WiFi显示为文字
     if (wifi_connected) {
         Paint_DrawString_EN(WIFI_DISPLAY_X, DATE_DISPLAY_Y, "WiFi:ON", &Font24, BLACK, WHITE);
     } else {
@@ -126,7 +226,6 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     Paint_DrawLine(DIVIDER_X, DIVIDER_Y, DIVIDER_X, SCREEN_HEIGHT, BLACK, DOT_PIXEL_2X2, LINE_STYLE_SOLID);
 
     // ========== 绘制左侧图片区域 ==========
-    // 绘制示例图案（可替换为实际图片）
     UWORD img_center_x = IMAGE_AREA_X + IMAGE_AREA_WIDTH / 2;
     UWORD img_center_y = IMAGE_AREA_Y + IMAGE_AREA_HEIGHT / 2;
     
@@ -137,22 +236,19 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     Paint_DrawString_EN(img_center_x - 50, img_center_y + 100, "Tuya AI", &Font24, WHITE, BLACK);
 
     // ========== 绘制右侧时间区域 ==========
-    // 时间区域标题
-    Paint_DrawString_EN(TIME_AREA_X + 20, TIME_AREA_Y + 20, "Current Time", &Font24, WHITE, BLACK);
-    
     // 绘制时间（大字体）
     if (time_str != NULL) {
         Paint_DrawString_EN(TIME_DISPLAY_X, TIME_DISPLAY_Y, time_str, &Font72, WHITE, BLACK);
         strncpy(s_current_time, time_str, sizeof(s_current_time) - 1);
     }
     
-    // 绘制装饰线
-    Paint_DrawLine(TIME_AREA_X + 20, TIME_DISPLAY_Y - 20, 
-                   TIME_AREA_X + TIME_AREA_WIDTH - 20, TIME_DISPLAY_Y - 20, 
-                   BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-    Paint_DrawLine(TIME_AREA_X + 20, TIME_DISPLAY_Y + 90, 
-                   TIME_AREA_X + TIME_AREA_WIDTH - 20, TIME_DISPLAY_Y + 90, 
-                   BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
+    // 时间下方分隔线
+    Paint_DrawLine(TIME_AREA_X + 20, WEATHER_AREA_Y - 10, 
+                   TIME_AREA_X + TIME_AREA_WIDTH - 20, WEATHER_AREA_Y - 10, 
+                   BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+
+    // ========== 绘制天气信息区域 ==========
+    draw_weather_info();
 
     // 显示整个画面
     EPD_7IN5_V2_Display(BlackImage_buf);
@@ -285,6 +381,116 @@ void EPD_7in5_update_image(const UBYTE *image_data)
     // 图片更新建议使用全屏刷新以获得最佳效果
     PR_DEBUG("Image update - recommend full refresh\r\n");
     // 这里可以扩展实现图片局部刷新
+}
+
+/*******************************************************************************
+ * 设置天气数据
+ ******************************************************************************/
+void EPD_7in5_set_weather(int temp, int humi, int weather_code, 
+                          const char *wind_dir, const char *wind_speed,
+                          int high_temp, int low_temp)
+{
+    s_weather_data.temp = temp;
+    s_weather_data.humi = humi;
+    s_weather_data.weather_code = weather_code;
+    s_weather_data.high_temp = high_temp;
+    s_weather_data.low_temp = low_temp;
+    
+    // 获取天气描述
+    const char *desc = weather_code_to_desc(weather_code);
+    strncpy(s_weather_data.weather_desc, desc, sizeof(s_weather_data.weather_desc) - 1);
+    
+    // 复制风向风速
+    if (wind_dir != NULL) {
+        strncpy(s_weather_data.wind_dir, wind_dir, sizeof(s_weather_data.wind_dir) - 1);
+    }
+    if (wind_speed != NULL) {
+        strncpy(s_weather_data.wind_speed, wind_speed, sizeof(s_weather_data.wind_speed) - 1);
+    }
+    
+    s_weather_valid = 1;
+    PR_DEBUG("Weather data set: temp=%d, humi=%d, desc=%s\r\n", temp, humi, desc);
+}
+
+/*******************************************************************************
+ * 局部刷新天气显示区域
+ ******************************************************************************/
+void EPD_7in5_update_weather(void)
+{
+    if (!s_epd_initialized) {
+        PR_DEBUG("EPD not initialized\r\n");
+        return;
+    }
+    
+    if (!s_weather_valid) {
+        PR_DEBUG("No weather data\r\n");
+        return;
+    }
+    
+    // 计算天气区域大小
+    UWORD weather_width = WEATHER_AREA_WIDTH;
+    UWORD weather_height = WEATHER_AREA_HEIGHT;
+    
+    UDOUBLE Imagesize = ((weather_width % 8 == 0) ? (weather_width / 8) : (weather_width / 8 + 1)) * weather_height;
+    
+    if ((PartialImage_buf = (UBYTE *)tkl_system_psram_malloc(Imagesize)) == NULL) {
+        PR_DEBUG("Failed to apply for weather area memory...\r\n");
+        return;
+    }
+
+    // 初始化局部刷新模式
+    EPD_7IN5_V2_Init_Part();
+
+    // 创建天气区域图像
+    Paint_NewImage(PartialImage_buf, weather_width, weather_height, 0, WHITE);
+    Paint_SelectImage(PartialImage_buf);
+    Paint_Clear(WHITE);
+
+    // 绘制天气信息（相对坐标）
+    char buf[64];
+    int y_offset = 20;
+    
+    // 天气区域标题
+    Paint_DrawString_EN(0, 0, "Weather", &Font24, WHITE, BLACK);
+    Paint_DrawLine(0, 28, weather_width, 28, BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+    
+    // 天气描述
+    Paint_DrawString_EN(0, y_offset + 20, s_weather_data.weather_desc, &Font24, WHITE, BLACK);
+    y_offset += 55;
+    
+    // 当前温度
+    snprintf(buf, sizeof(buf), "Temp: %d C", s_weather_data.temp);
+    Paint_DrawString_EN(0, y_offset, buf, &Font20, WHITE, BLACK);
+    y_offset += 30;
+    
+    // 高低温
+    snprintf(buf, sizeof(buf), "H:%d  L:%d", s_weather_data.high_temp, s_weather_data.low_temp);
+    Paint_DrawString_EN(0, y_offset, buf, &Font20, WHITE, BLACK);
+    y_offset += 30;
+    
+    // 湿度
+    snprintf(buf, sizeof(buf), "Humidity: %d%%", s_weather_data.humi);
+    Paint_DrawString_EN(0, y_offset, buf, &Font20, WHITE, BLACK);
+    y_offset += 30;
+    
+    // 风向风速
+    snprintf(buf, sizeof(buf), "Wind: %s", s_weather_data.wind_dir);
+    Paint_DrawString_EN(0, y_offset, buf, &Font20, WHITE, BLACK);
+    y_offset += 25;
+    
+    snprintf(buf, sizeof(buf), "Speed: %s", s_weather_data.wind_speed);
+    Paint_DrawString_EN(0, y_offset, buf, &Font20, WHITE, BLACK);
+
+    // 局部刷新
+    UWORD x_end = WEATHER_AREA_X + weather_width;
+    UWORD y_end = WEATHER_AREA_Y + weather_height;
+    EPD_7IN5_V2_Display_Part(PartialImage_buf, WEATHER_AREA_X, WEATHER_AREA_Y, x_end, y_end);
+
+    // 释放缓冲区
+    tkl_system_psram_free(PartialImage_buf);
+    PartialImage_buf = NULL;
+
+    PR_DEBUG("Weather display updated\r\n");
 }
 
 /*******************************************************************************

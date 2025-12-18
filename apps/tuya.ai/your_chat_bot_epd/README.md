@@ -17,17 +17,26 @@ English | [简体中文](./README_zh.md)
    +--------------------------------------------------+
    |     Status Bar (Date + WiFi Status)              | 50px
    +--------------------------------------------------+
-   |                      |                           |
-   |     Image Area       |      Time Display         |
-   |      (Left)          |        (Right)            |
-   |      350x430         |        450x430            |
-   |                      |                           |
+   |                      |  Time (HH:MM)             |
+   |     Image Area       |---------------------------|
+   |      (Left)          |  Weather Information      |
+   |      350x430         |  - Temperature            |
+   |                      |  - Humidity               |
+   |                      |  - Wind Direction/Speed   |
+   |                      |  - High/Low Temp          |
    +----------------------+---------------------------+
    ```
 
-3. AI intelligent conversation
-4. Button wake-up / Voice wake-up
-5. Quick Bluetooth network connection
+3. **Weather Display**
+   - Current temperature and humidity
+   - Weather description (Sunny, Cloudy, Rain, etc.)
+   - Wind direction and speed
+   - Today's high/low temperature
+   - Auto-refresh every 30 minutes from Tuya Cloud
+
+4. AI intelligent conversation
+5. Button wake-up / Voice wake-up
+6. Quick Bluetooth network connection
 
 ## Hardware Requirements
 
@@ -71,11 +80,22 @@ English | [简体中文](./README_zh.md)
 | `EPD_7in5_update_time(time_str)` | Partial refresh to update time display |
 | `EPD_7in5_update_status(date_str, wifi)` | Partial refresh to update status bar |
 | `EPD_7in5_init_layout(date, time, wifi)` | Full refresh to initialize complete layout |
+| `EPD_7in5_set_weather(...)` | Set weather data for display |
+| `EPD_7in5_update_weather()` | Partial refresh to update weather area |
+
+### Weather API (from Tuya Cloud)
+
+| Function | Description |
+| --- | --- |
+| `tuya_weather_get_current_conditions()` | Get current temperature, humidity, weather code |
+| `tuya_weather_get_current_wind()` | Get wind direction and speed |
+| `tuya_weather_get_today_high_low_temp()` | Get today's high/low temperature |
 
 ### Refresh Strategy
 
 - **Time Display**: Partial refresh every minute (fast, low power)
 - **Status Bar**: Partial refresh when date changes
+- **Weather Display**: Partial refresh every 30 minutes
 - **Background**: Full refresh only on initialization
 
 ## Notes

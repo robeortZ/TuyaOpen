@@ -26,6 +26,7 @@
 #include "tkl_output.h"
 #include "tal_cli.h"
 #include "tuya_authorize.h"
+#include "tuya_weather.h"  // 天气服务
 #if defined(ENABLE_WIFI) && (ENABLE_WIFI == 1)
 #include "netconn_wifi.h"
 #endif
@@ -61,6 +62,9 @@ tuya_iot_client_t ai_client;
 #define DPID_VOLUME 3
 
 static uint8_t _need_reset = 0;
+
+// 前向声明
+static void __app_update_weather(void);
 
 /**
  * @brief user defined log output api, in this demo, it will use uart0 as log-tx
@@ -177,6 +181,10 @@ void user_event_handler_on(tuya_iot_client_t *client, tuya_event_msg_t *event)
 
             ai_audio_player_play_alert(AI_AUDIO_ALERT_NETWORK_CONNECTED);
             ai_audio_volume_upload();
+            
+            // 连接云端后延迟几秒获取天气（等待时间同步完成）
+            tal_system_sleep(3000);
+            __app_update_weather();
         }
         break;
 
@@ -271,6 +279,64 @@ static TIMER_ID epd_time_update_tm;
 // 星期几的英文缩写
 static const char *weekday_str[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
+// 上次天气更新时间（用于控制天气更新频率）
+static uint32_t s_last_weather_update = 0;
+#define WEATHER_UPDATE_INTERVAL_MS  (30 * 60 * 1000)  // 30分钟更新一次天气
+
+/*******************************************************************************
+ * 获取并更新天气数据
+ ******************************************************************************/
+static void __app_update_weather(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+    
+    // 检查是否允许更新天气
+    if (!tuya_weather_allow_update()) {
+        PR_DEBUG("Weather update not allowed yet\r\n");
+        return;
+    }
+    
+    // 获取当前天气
+    WEATHER_CURRENT_CONDITIONS_T current = {0};
+    rt = tuya_weather_get_current_conditions(&current);
+    if (rt != OPRT_OK) {
+        PR_ERR("Get weather conditions failed: %d\r\n", rt);
+        return;
+    }
+    
+    // 获取风向风速
+    char wind_dir[64] = {0};
+    char wind_speed[64] = {0};
+    rt = tuya_weather_get_current_wind(wind_dir, wind_speed);
+    if (rt != OPRT_OK) {
+        // 使用默认值
+        strncpy(wind_dir, "N/A", sizeof(wind_dir));
+        strncpy(wind_speed, "N/A", sizeof(wind_speed));
+    }
+    
+    // 获取今日高低温
+    int high_temp = 0, low_temp = 0;
+    rt = tuya_weather_get_today_high_low_temp(&high_temp, &low_temp);
+    if (rt != OPRT_OK) {
+        high_temp = current.temp + 5;
+        low_temp = current.temp - 5;
+    }
+    
+    // 设置天气数据到EPD模块
+    extern void EPD_7in5_set_weather(int temp, int humi, int weather_code,
+                                      const char *wind_dir, const char *wind_speed,
+                                      int high_temp, int low_temp);
+    EPD_7in5_set_weather(current.temp, current.humi, current.weather,
+                          wind_dir, wind_speed, high_temp, low_temp);
+    
+    // 刷新天气显示
+    extern void EPD_7in5_update_weather(void);
+    EPD_7in5_update_weather();
+    
+    PR_INFO("Weather updated: temp=%d, humi=%d, weather=%d\r\n", 
+            current.temp, current.humi, current.weather);
+}
+
 static void __app_display_status_time_update(TIMER_ID timer_id, void *arg)
 {
     POSIX_TM_S tm = {0};
@@ -315,6 +381,13 @@ static void __app_display_status_time_update(TIMER_ID timer_id, void *arg)
         // 更新状态栏
         extern void EPD_7in5_update_status(const char *date_str, uint8_t wifi_connected);
         EPD_7in5_update_status(date_str, wifi_connected);
+    }
+    
+    // 定期更新天气（每30分钟）
+    uint32_t current_time = tal_system_get_millisecond();
+    if (current_time - s_last_weather_update >= WEATHER_UPDATE_INTERVAL_MS) {
+        s_last_weather_update = current_time;
+        __app_update_weather();
     }
 }
 
