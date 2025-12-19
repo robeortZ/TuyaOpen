@@ -11,6 +11,8 @@
 #include "tkl_memory.h"
 #include "tal_api.h"
 #include "tuya_ringbuf.h"
+#include "cJSON.h"
+#include "http_download.h"
 
 #if defined(ENABLE_BUTTON) && (ENABLE_BUTTON == 1)
 #include "tdl_button_manage.h"
@@ -25,6 +27,9 @@
 #include "app_chat_bot.h"
 #include "media_src_zh.h"
 #include "app_pwm.h"
+
+// 声明 EPD 显示图片函数
+extern void EPD_7in5_display_downloaded_image(uint8_t *jpeg_data, uint32_t jpeg_size);
 
 /***********************************************************
 ************************macro define************************
@@ -134,67 +139,262 @@ static TDL_LED_HANDLE_T sg_led_hdl = NULL;
 static TDL_BUTTON_HANDLE sg_button_hdl = NULL;
 #endif
 
+// 图片下载相关变量
+static uint8_t *s_image_download_buf = NULL;
+static uint32_t s_image_download_size = 0;
+static uint32_t s_image_download_offset = 0;
+
 /***********************************************************
 ***********************function define**********************
 ***********************************************************/
+
+/**
+ * @brief 图片下载事件回调
+ */
+static void __image_download_event_cb(http_download_event_id_t id, http_download_event_t *event)
+{
+    switch (id) {
+    case DL_EVENT_ON_FILESIZE:
+        PR_DEBUG("Image file size: %d bytes", event->file_size);
+        s_image_download_size = event->file_size;
+        s_image_download_offset = 0;
+        // 分配内存
+        if (s_image_download_buf) {
+            tkl_system_psram_free(s_image_download_buf);
+        }
+        s_image_download_buf = tkl_system_psram_malloc(event->file_size);
+        if (!s_image_download_buf) {
+            PR_ERR("Failed to allocate memory for image download");
+        }
+        break;
+    case DL_EVENT_ON_DATA:
+        if (s_image_download_buf && event->data) {
+            memcpy(s_image_download_buf + event->offset, event->data, event->data_len);
+            s_image_download_offset = event->offset + event->data_len;
+            PR_DEBUG("Downloaded %d/%d bytes", s_image_download_offset, s_image_download_size);
+        }
+        break;
+    case DL_EVENT_FINISH:
+        PR_INFO("Image download complete: %d bytes", s_image_download_offset);
+        // 下载完成，显示图片
+        if (s_image_download_buf && s_image_download_offset > 0) {
+            EPD_7in5_display_downloaded_image(s_image_download_buf, s_image_download_offset);
+        }
+        break;
+    case DL_EVENT_FAULT:
+        PR_ERR("Image download failed");
+        if (s_image_download_buf) {
+            tkl_system_psram_free(s_image_download_buf);
+            s_image_download_buf = NULL;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/**
+ * @brief Extract image URL from text that may contain JSON array
+ * @param text Text content that may contain JSON array with imageUrl
+ * @param text_len Length of text
+ * @param image_url Output buffer for image URL
+ * @param url_buf_size Size of image_url buffer
+ * @return true if image URL found, false otherwise
+ */
+static bool __extract_image_url_from_text(const char *text, uint32_t text_len, char *image_url, uint32_t url_buf_size)
+{
+    if (text == NULL || text_len == 0 || image_url == NULL || url_buf_size == 0) {
+        return false;
+    }
+
+    // Find JSON array in text (format: [{"imageUrl":"..."}])
+    const char *json_start = strchr(text, '[');
+    if (json_start == NULL) {
+        return false;
+    }
+
+    // Find matching closing bracket
+    const char *json_end = strrchr(json_start, ']');
+    if (json_end == NULL) {
+        return false;
+    }
+
+    // Extract JSON substring
+    uint32_t json_len = json_end - json_start + 1;
+    char *json_str = tal_malloc(json_len + 1);
+    if (json_str == NULL) {
+        return false;
+    }
+    memcpy(json_str, json_start, json_len);
+    json_str[json_len] = '\0';
+
+    // Parse JSON
+    cJSON *json = cJSON_Parse(json_str);
+    tal_free(json_str);
+    if (json == NULL) {
+        return false;
+    }
+
+    // Check if it's an array
+    if (!cJSON_IsArray(json)) {
+        cJSON_Delete(json);
+        return false;
+    }
+
+    // Get first element
+    cJSON *first_item = cJSON_GetArrayItem(json, 0);
+    if (first_item == NULL) {
+        cJSON_Delete(json);
+        return false;
+    }
+
+    // Extract imageUrl field
+    cJSON *image_url_item = cJSON_GetObjectItem(first_item, "imageUrl");
+    if (image_url_item == NULL || !cJSON_IsString(image_url_item)) {
+        cJSON_Delete(json);
+        return false;
+    }
+
+    const char *url = cJSON_GetStringValue(image_url_item);
+    if (url != NULL && url[0] != '\0') {
+        uint32_t url_len = strlen(url);
+        uint32_t copy_len = (url_len < url_buf_size - 1) ? url_len : url_buf_size - 1;
+        memcpy(image_url, url, copy_len);
+        image_url[copy_len] = '\0';
+        cJSON_Delete(json);
+        PR_DEBUG("Extracted image URL from text: %s", image_url);
+        return true;
+    }
+
+    cJSON_Delete(json);
+    return false;
+}
+
+// 声明证书查询函数
+extern int tuya_iotdns_query_domain_certs(char *url, uint8_t **cacert, uint16_t *cacert_len);
+
+/**
+ * @brief 下载图片并显示在墨水屏上
+ * @param image_url 图片 URL
+ */
+static void __download_and_display_image(const char *image_url)
+{
+    if (image_url == NULL || image_url[0] == '\0') {
+        return;
+    }
+
+    PR_INFO("Starting image download: %s", image_url);
+
+    // 查询域名证书（用于 HTTPS 连接）
+    uint8_t *cert = NULL;
+    uint16_t cert_len = 0;
+    int cert_ret = tuya_iotdns_query_domain_certs((char *)image_url, &cert, &cert_len);
+    if (cert_ret != 0) {
+        PR_WARN("Failed to get domain cert: %d, will try without cert verification", cert_ret);
+    } else {
+        PR_DEBUG("Got domain cert, len: %d", cert_len);
+    }
+
+    http_download_config_t config = {
+        .url = image_url,
+        .cacert = cert,
+        .cacert_len = cert_len,
+        .timeout_ms = 60000,
+        .range_length = 16 * 1024,
+        .file_size = 0,
+        .user_data = NULL,
+        .event_handler = __image_download_event_cb,
+    };
+
+    int ret = http_file_download(&config);
+    if (ret != 0) {
+        PR_ERR("Failed to start image download: %d", ret);
+    }
+
+    // 释放证书内存
+    if (cert) {
+        tal_free(cert);
+    }
+}
 static void __app_ai_audio_evt_inform_cb(AI_AUDIO_EVENT_E event, uint8_t *data, uint32_t len, void *arg)
 {
-#if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
-#if !defined(ENABLE_GUI_STREAM_AI_TEXT) || (ENABLE_GUI_STREAM_AI_TEXT != 1)
+    // 用于收集完整的 AI 回复文本（用于提取图片 URL）
     static uint8_t *p_ai_text = NULL;
     static uint32_t ai_text_len = 0;
-#endif
-#endif
 
     switch (event) {
     case AI_AUDIO_EVT_HUMAN_ASR_TEXT: {
         if (len > 0 && data) {
-// send asr text to display
+            // 打印用户输入
+            PR_INFO("User ASR: %.*s", len, (char *)data);
 #if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
             app_display_send_msg(TY_DISPLAY_TP_USER_MSG, data, len);
 #endif
         }
     } break;
     case AI_AUDIO_EVT_AI_REPLIES_TEXT_START: {
+        // 初始化文本收集缓冲区
+        if (NULL == p_ai_text) {
+            p_ai_text = tkl_system_psram_malloc(AI_AUDIO_TEXT_BUFF_LEN);
+        }
+        if (p_ai_text) {
+            ai_text_len = 0;
+            memset(p_ai_text, 0, AI_AUDIO_TEXT_BUFF_LEN);
+        }
 #if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
 #if defined(ENABLE_GUI_STREAM_AI_TEXT) && (ENABLE_GUI_STREAM_AI_TEXT == 1)
         app_display_send_msg(TY_DISPLAY_TP_ASSISTANT_MSG_STREAM_START, data, len);
-#else
-        if (NULL == p_ai_text) {
-            p_ai_text = tkl_system_psram_malloc(AI_AUDIO_TEXT_BUFF_LEN);
-            if (NULL == p_ai_text) {
-                return;
-            }
-        }
-
-        ai_text_len = 0;
 #endif
 #endif
     } break;
     case AI_AUDIO_EVT_AI_REPLIES_TEXT_DATA: {
+        // 收集 AI 回复文本
+        if (p_ai_text && data && len > 0 && ai_text_len + len < AI_AUDIO_TEXT_BUFF_LEN) {
+            memcpy(p_ai_text + ai_text_len, data, len);
+            ai_text_len += len;
+        }
 #if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
 #if defined(ENABLE_GUI_STREAM_AI_TEXT) && (ENABLE_GUI_STREAM_AI_TEXT == 1)
         app_display_send_msg(TY_DISPLAY_TP_ASSISTANT_MSG_STREAM_DATA, data, len);
 #else
-        memcpy(p_ai_text + ai_text_len, data, len);
-
-        ai_text_len += len;
         if (ai_text_len >= AI_AUDIO_TEXT_SHOW_LEN) {
             app_display_send_msg(TY_DISPLAY_TP_ASSISTANT_MSG, p_ai_text, ai_text_len);
-            ai_text_len = 0;
         }
 #endif
 #endif
     } break;
     case AI_AUDIO_EVT_AI_REPLIES_TEXT_END: {
+        // 追加最后的数据
+        if (data && len > 0 && p_ai_text && ai_text_len + len < AI_AUDIO_TEXT_BUFF_LEN) {
+            memcpy(p_ai_text + ai_text_len, data, len);
+            ai_text_len += len;
+        }
+
+        // 打印完整的 AI 回复文本
+        if (p_ai_text && ai_text_len > 0) {
+            p_ai_text[ai_text_len] = '\0';
+            PR_INFO("AI Reply Text: %s", (char *)p_ai_text);
+
+            // 检查是否包含图片 URL
+            char image_url[512] = {0};
+            if (__extract_image_url_from_text((const char *)p_ai_text, ai_text_len, image_url, sizeof(image_url))) {
+                PR_NOTICE("Found image URL in AI response: %s", image_url);
+                // 下载并显示图片
+                __download_and_display_image(image_url);
+            }
+        }
+
 #if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
 #if defined(ENABLE_GUI_STREAM_AI_TEXT) && (ENABLE_GUI_STREAM_AI_TEXT == 1)
         app_display_send_msg(TY_DISPLAY_TP_ASSISTANT_MSG_STREAM_END, data, len);
 #else
-        app_display_send_msg(TY_DISPLAY_TP_ASSISTANT_MSG, p_ai_text, ai_text_len);
+        if (p_ai_text && ai_text_len > 0) {
+            app_display_send_msg(TY_DISPLAY_TP_ASSISTANT_MSG, p_ai_text, ai_text_len);
+        }
+#endif
+#endif
+        // 重置文本长度（保留缓冲区供下次使用）
         ai_text_len = 0;
-#endif
-#endif
     } break;
     case AI_AUDIO_EVT_AI_REPLIES_EMO: {
         AI_AUDIO_EMOTION_T *emo;
