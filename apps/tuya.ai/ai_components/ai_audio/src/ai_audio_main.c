@@ -78,7 +78,11 @@ static void __ai_audio_agent_event_cb(AI_EVENT_TYPE event, AI_EVENT_ID event_id)
         if (ai_audio_player_is_playing()) {
             ai_audio_player_stop();
         }
-        // stop UI streaming display
+        // Stop recording when server VAD detects speech end
+        if (sg_ai_audio.work_mode == AI_AUDIO_MODE_MANUAL_SINGLE_TALK) {
+            ai_audio_input_manual_open_get_valid_data(false);
+            PR_DEBUG("server vad: stopped manual recording");
+        }
         #endif
 #if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
         if (sg_ai_audio.evt_inform_cb) {

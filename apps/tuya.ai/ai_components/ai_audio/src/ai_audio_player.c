@@ -89,18 +89,32 @@ static OPERATE_RET __ai_audio_player_mp3_start(void)
 {
     OPERATE_RET rt = OPRT_OK;
 
+    // Check if audio device is available, try to find it if NULL
+    // This handles cases where Bluetooth audio device was connected after initialization
+    if (NULL == sg_player.audio_hdl) {
+        PR_WARN("audio device handle is NULL, trying to find audio device...");
+        rt = tdl_audio_find(AUDIO_CODEC_NAME, &sg_player.audio_hdl);
+        if (OPRT_OK != rt || NULL == sg_player.audio_hdl) {
+            PR_ERR("audio device not found, cannot start player (ret: %d)", rt);
+            return OPRT_COM_ERROR;
+        }
+        PR_INFO("Audio device found and ready for playback");
+    }
+
     if (NULL == sg_player.mp3_dec) {
         sg_player.mp3_dec = (mp3dec_t *)tkl_system_psram_malloc(sizeof(mp3dec_t));
         if (NULL == sg_player.mp3_dec) {
-            PR_ERR("malloc mp3dec_t failed");
+            PR_ERR("malloc mp3dec_t failed, insufficient memory");
             return OPRT_MALLOC_FAILED;
         }
 
         mp3dec_init(sg_player.mp3_dec);
+        PR_DEBUG("MP3 decoder initialized successfully");
     }
 
     sg_player.mp3_raw_used_len = 0;
 
+    PR_DEBUG("MP3 player start successful");
     return rt;
 }
 
@@ -405,16 +419,33 @@ OPERATE_RET ai_audio_player_start(char *id)
 
     uint32_t wait_cnt = 0;
     while (sg_player.stat != AI_AUDIO_PLAYER_STAT_PLAY) {
+        // If state becomes IDLE, it means __ai_audio_player_mp3_start failed
+        if (sg_player.stat == AI_AUDIO_PLAYER_STAT_IDLE) {
+            PR_ERR("player start failed, state changed to IDLE");
+            rt = OPRT_COM_ERROR;
+            // Reset is_playing flag on failure
+            tal_mutex_lock(sg_player.mutex);
+            sg_player.is_playing = false;
+            tal_mutex_unlock(sg_player.mutex);
+            break;
+        }
         tal_system_sleep(10);
         wait_cnt++;
         if (wait_cnt > 100) {
             // maybe __ai_audio_player_mp3_start failed
             PR_ERR("wait player start timeout");
             rt = OPRT_COM_ERROR;
+            // Reset is_playing flag on timeout
+            tal_mutex_lock(sg_player.mutex);
+            sg_player.is_playing = false;
+            tal_mutex_unlock(sg_player.mutex);
+            break;
         }
     }
 
-    PR_NOTICE("ai audio player start");
+    if (rt == OPRT_OK) {
+        PR_NOTICE("ai audio player start");
+    }
 
     return rt;
 }

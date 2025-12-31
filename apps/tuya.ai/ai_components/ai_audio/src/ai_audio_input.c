@@ -24,6 +24,7 @@
 #include "tuya_ringbuf.h"
 
 #include "ai_audio.h"
+#include "tuya_ai_client.h"
 /***********************************************************
 ************************macro define************************
 ***********************************************************/
@@ -367,18 +368,36 @@ AI_AUDIO_INPUT_EVENT_E __ai_audio_input_get_event(AI_AUDIO_INPUT_STATE_E curr_st
 static void __ai_audio_get_input_frame(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status, uint8_t *data,
                                        uint32_t len)
 {
+    bool voice_interrupt = false;
+    
 #if defined(ENABLE_AUDIO_AEC) && (ENABLE_AUDIO_AEC == 1)
 
 #else
+    // Always keep VAD running to detect voice interruption
+    tkl_vad_start();
+    
+    // Check if user is speaking while AI is playing (voice interrupt)
     if (true == ai_audio_player_is_playing()) {
-        tkl_vad_stop();
-        return;
-    } else {
-        tkl_vad_start();
+        // Feed data to VAD to check for speech
+        if (true == sg_audio_input.is_enable_get_valid_data) {
+            __ai_audio_detect_valid_data_feed(sg_audio_input.method, (uint8_t *)data, len);
+        }
+        
+        // If VAD detects speech, interrupt the playback
+        if (TKL_VAD_STATUS_SPEECH == tkl_vad_get_status()) {
+            PR_NOTICE("Voice interrupt detected! Stopping AI playback...");
+            ai_audio_player_stop();
+            voice_interrupt = true;
+            // Continue to process the voice input below
+        } else {
+            // No speech detected, skip processing during playback
+            return;
+        }
     }
 #endif
 
-    if (true == sg_audio_input.is_enable_get_valid_data) {
+    // Only feed to VAD if not already done during interrupt check
+    if (true == sg_audio_input.is_enable_get_valid_data && !voice_interrupt) {
         __ai_audio_detect_valid_data_feed(sg_audio_input.method, (uint8_t *)data, len);
     }
 
@@ -425,7 +444,15 @@ static void __ai_audio_handle_frame_task(void *arg)
         }
 
         if ((event != AI_AUDIO_INPUT_EVT_NONE) && sg_audio_input_inform_cb) {
-            sg_audio_input_inform_cb(event, NULL);
+            // Only trigger VOICE_START event if AI client is ready
+            // This prevents upload failures when AI is not connected yet
+            if (event == AI_AUDIO_INPUT_EVT_GET_VALID_VOICE_START && !tuya_ai_client_is_ready()) {
+                PR_DEBUG("AI client not ready, skip VOICE_START event");
+                // Reset state to DETECTING to allow retry when AI is ready
+                sg_audio_input.state = AI_AUDIO_INPUT_STATE_DETECTING;
+            } else {
+                sg_audio_input_inform_cb(event, NULL);
+            }
         }
 
         tal_system_sleep(10);
@@ -448,15 +475,22 @@ static OPERATE_RET __ai_audio_input_open(void)
 
 static OPERATE_RET __ai_audio_input_set_method(AI_AUDIO_INPUT_VALID_METHOD_E method)
 {
+    PR_NOTICE(">>> __ai_audio_input_set_method: method=%d (VAD=%d, ASR=%d, MANUAL=%d) <<<",
+              method, AI_AUDIO_INPUT_VALID_METHOD_VAD, AI_AUDIO_INPUT_VALID_METHOD_ASR, 
+              AI_AUDIO_INPUT_VALID_METHOD_MANUAL);
+    
     switch (method) {
     case AI_AUDIO_INPUT_VALID_METHOD_VAD:
+        PR_NOTICE("Initializing VAD method...");
         __ai_audio_vad_init();
         break;
     case AI_AUDIO_INPUT_VALID_METHOD_ASR:
+        PR_NOTICE("Initializing ASR method...");
         __ai_audio_vad_init();
         __ai_audio_asr_init();
         break;
     case AI_AUDIO_INPUT_VALID_METHOD_MANUAL:
+        PR_NOTICE("Using MANUAL method (no VAD init)");
         // do nothing
         break;
     default:

@@ -29,6 +29,7 @@
 
 #include <alsa/asoundlib.h>
 #include <pthread.h>
+#include <string.h>
 
 #include "tal_log.h"
 #include "tal_memory.h"
@@ -182,13 +183,47 @@ static OPERATE_RET __alsa_setup_playback(TDD_AUDIO_ALSA_HANDLE_T *hdl)
 {
     int err;
     snd_pcm_hw_params_t *hw_params = NULL;
+    const char *device = hdl->cfg.playback_device;
 
-    // Open PCM device for playback (non-blocking mode to avoid hanging)
-    err = snd_pcm_open(&hdl->playback_handle, hdl->cfg.playback_device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+    // Try to open the configured playback device
+    err = snd_pcm_open(&hdl->playback_handle, device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
     if (err < 0) {
-        PR_WARN("Audio playback device '%s' not available: %s", hdl->cfg.playback_device, snd_strerror(err));
-        PR_WARN("Continuing without audio playback (this is normal on systems without audio hardware)");
-        return OPRT_COM_ERROR;
+        PR_WARN("Audio playback device '%s' not available: %s", device, snd_strerror(err));
+        
+        // If default device fails, try alternative devices
+        if (strcmp(device, "default") == 0) {
+            // Try Bluetooth/PipeWire first, then hardware devices
+            // Priority: Bluetooth audio (via PipeWire) > HDMI hardware devices
+            const char *fallback_devices[] = {
+                "pipewire",        // PipeWire (for Bluetooth audio support)
+                "pulse",           // PulseAudio/PipeWire (legacy name)
+                "plughw:0,0",      // Hardware device with software conversion (card 0, device 0) - HDMI
+                "plughw:1,0",      // Hardware device with software conversion (card 1, device 0) - HDMI
+                "hw:0,0",          // Direct hardware device (card 0, device 0)
+                "hw:1,0",          // Direct hardware device (card 1, device 0)
+                NULL
+            };
+            
+            int i = 0;
+            while (fallback_devices[i] != NULL) {
+                PR_WARN("Trying fallback device '%s'...", fallback_devices[i]);
+                err = snd_pcm_open(&hdl->playback_handle, fallback_devices[i], SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+                if (err >= 0) {
+                    PR_INFO("Successfully opened playback device '%s'", fallback_devices[i]);
+                    break;
+                }
+                PR_WARN("Fallback device '%s' also not available: %s", fallback_devices[i], snd_strerror(err));
+                i++;
+            }
+            
+            if (err < 0) {
+                PR_WARN("All playback devices failed, continuing without audio playback");
+                return OPRT_COM_ERROR;
+            }
+        } else {
+            PR_WARN("Continuing without audio playback (this is normal on systems without audio hardware)");
+            return OPRT_COM_ERROR;
+        }
     }
 
     // Switch back to blocking mode for normal operation
@@ -198,11 +233,44 @@ static OPERATE_RET __alsa_setup_playback(TDD_AUDIO_ALSA_HANDLE_T *hdl)
     snd_pcm_hw_params_alloca(&hw_params);
     snd_pcm_hw_params_any(hdl->playback_handle, hw_params);
 
-    // Set parameters
+    // Set parameters (use _near functions to allow device to choose closest supported values)
     snd_pcm_hw_params_set_access(hdl->playback_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
-    snd_pcm_hw_params_set_format(hdl->playback_handle, hw_params, __get_alsa_format(hdl->cfg.data_bits));
-    snd_pcm_hw_params_set_channels(hdl->playback_handle, hw_params, hdl->cfg.channels);
-    snd_pcm_hw_params_set_rate_near(hdl->playback_handle, hw_params, (unsigned int *)&hdl->cfg.spk_sample_rate, 0);
+    
+    // Try to set format, but allow device to choose if not supported
+    snd_pcm_format_t format = __get_alsa_format(hdl->cfg.data_bits);
+    err = snd_pcm_hw_params_set_format(hdl->playback_handle, hw_params, format);
+    if (err < 0) {
+        PR_WARN("Format %d not supported, trying S16_LE...", format);
+        format = SND_PCM_FORMAT_S16_LE;
+        err = snd_pcm_hw_params_set_format(hdl->playback_handle, hw_params, format);
+        if (err < 0) {
+            PR_WARN("S16_LE also not supported, using device default");
+            // Let device choose format
+        }
+    }
+    
+    // Set channels (allow device to choose if mono not supported)
+    unsigned int channels = hdl->cfg.channels;
+    err = snd_pcm_hw_params_set_channels(hdl->playback_handle, hw_params, channels);
+    if (err < 0) {
+        PR_WARN("Mono not supported, trying stereo...");
+        channels = 2;
+        err = snd_pcm_hw_params_set_channels(hdl->playback_handle, hw_params, channels);
+        if (err < 0) {
+            PR_WARN("Stereo also not supported, using device default");
+            // Let device choose channels
+        }
+    }
+    
+    // Set sample rate (use _near to allow device to choose closest)
+    unsigned int rate = hdl->cfg.spk_sample_rate;
+    int dir = 0;
+    err = snd_pcm_hw_params_set_rate_near(hdl->playback_handle, hw_params, &rate, &dir);
+    if (err < 0) {
+        PR_WARN("Sample rate %d not supported, device will choose", hdl->cfg.spk_sample_rate);
+    } else if (rate != hdl->cfg.spk_sample_rate) {
+        PR_INFO("Sample rate adjusted from %d to %d Hz", hdl->cfg.spk_sample_rate, rate);
+    }
 
     // Set buffer and period sizes
     snd_pcm_uframes_t buffer_size = hdl->cfg.buffer_frames;
@@ -346,27 +414,35 @@ static OPERATE_RET __tdd_audio_alsa_open(TDD_AUDIO_HANDLE_T handle, TDL_AUDIO_MI
 
     hdl->mic_cb = mic_cb;
 
-    // Setup capture device
+    // Setup capture device (optional - allow open to succeed even if capture fails)
     rt = __alsa_setup_capture(hdl);
     if (OPRT_OK != rt) {
-        PR_ERR("Failed to setup capture device");
-        return rt;
+        PR_WARN("Failed to setup capture device, continuing without capture capability");
+        PR_WARN("This is normal on systems without microphone hardware");
+        hdl->capture_handle = NULL;
+        // Don't fail the entire open operation, just disable capture
     }
 
-    // Setup playback device
+    // Setup playback device (optional - allow open to succeed even if playback fails)
     rt = __alsa_setup_playback(hdl);
     if (OPRT_OK != rt) {
-        PR_ERR("Failed to setup playback device");
-        // Cleanup capture
-        if (hdl->capture_handle) {
-            snd_pcm_close(hdl->capture_handle);
-            hdl->capture_handle = NULL;
+        PR_WARN("Failed to setup playback device, continuing without playback capability");
+        PR_WARN("This is normal when using Bluetooth audio or PulseAudio");
+        // Don't fail the entire open operation, just disable playback
+        hdl->playback_handle = NULL;
+    }
+
+    // If both capture and playback failed, we can still open the device
+    // (it just won't have any functionality, but allows the system to continue)
+    if (hdl->capture_handle == NULL && hdl->playback_handle == NULL) {
+        PR_WARN("Both capture and playback devices failed, but continuing with audio device open");
+    } else {
+        if (hdl->playback_handle != NULL) {
+            PR_INFO("Playback device is available and ready");
         }
-        if (hdl->capture_buffer) {
-            tal_free(hdl->capture_buffer);
-            hdl->capture_buffer = NULL;
+        if (hdl->capture_handle != NULL) {
+            PR_INFO("Capture device is available and ready");
         }
-        return rt;
     }
 
     // Setup mixer for volume control
@@ -378,20 +454,28 @@ static OPERATE_RET __tdd_audio_alsa_open(TDD_AUDIO_HANDLE_T handle, TDL_AUDIO_MI
         snd_mixer_selem_set_playback_volume_all(hdl->mixer_elem, volume);
     }
 
-    // Start capture thread
-    hdl->capture_running = 1;
-    int err = pthread_create(&hdl->capture_thread, NULL, __alsa_capture_thread, hdl);
-    if (err != 0) {
-        PR_ERR("Failed to create capture thread: %d", err);
-        hdl->capture_running = 0;
-        // Cleanup
-        snd_pcm_close(hdl->capture_handle);
-        snd_pcm_close(hdl->playback_handle);
-        if (hdl->mixer_handle) {
-            snd_mixer_close(hdl->mixer_handle);
+    // Start capture thread only if capture device is available
+    if (hdl->capture_handle != NULL) {
+        hdl->capture_running = 1;
+        int err = pthread_create(&hdl->capture_thread, NULL, __alsa_capture_thread, hdl);
+        if (err != 0) {
+            PR_ERR("Failed to create capture thread: %d", err);
+            hdl->capture_running = 0;
+            // Cleanup capture device
+            if (hdl->capture_handle) {
+                snd_pcm_close(hdl->capture_handle);
+                hdl->capture_handle = NULL;
+            }
+            if (hdl->capture_buffer) {
+                tal_free(hdl->capture_buffer);
+                hdl->capture_buffer = NULL;
+            }
+            // Don't fail the entire open operation, just disable capture
+        } else {
+            PR_INFO("ALSA capture thread started");
         }
-        tal_free(hdl->capture_buffer);
-        return OPRT_COM_ERROR;
+    } else {
+        PR_INFO("Skipping capture thread (capture device not available)");
     }
 
     PR_INFO("ALSA audio device opened successfully");
@@ -408,7 +492,12 @@ static OPERATE_RET __tdd_audio_alsa_play(TDD_AUDIO_HANDLE_T handle, uint8_t *dat
     TDD_AUDIO_ALSA_HANDLE_T *hdl = (TDD_AUDIO_ALSA_HANDLE_T *)handle;
 
     TUYA_CHECK_NULL_RETURN(hdl, OPRT_COM_ERROR);
-    TUYA_CHECK_NULL_RETURN(hdl->playback_handle, OPRT_COM_ERROR);
+    
+    if (NULL == hdl->playback_handle) {
+        PR_WARN("Playback device not available, cannot play audio");
+        PR_WARN("This may happen if playback device failed to open during audio device initialization");
+        return OPRT_COM_ERROR;
+    }
 
     if (NULL == data || len == 0) {
         PR_ERR("Play data is NULL or empty");

@@ -150,8 +150,30 @@ static OPERATE_RET _parse_nlg(cJSON *json, uint8_t eof)
 {
     cJSON *node;
     AI_AGENT_MSG_T ai_msg = {0};
+    bool has_image = false;
+    const char *image_url = NULL;
 
     node = cJSON_GetObjectItem(json, "data");
+    
+    // Check for images in nlgResult
+    cJSON *nlg_result = cJSON_GetObjectItem(node, "nlgResult");
+    if (nlg_result != NULL) {
+        cJSON *images = cJSON_GetObjectItem(nlg_result, "images");
+        if (images != NULL) {
+            cJSON *url_array = cJSON_GetObjectItem(images, "url");
+            if (url_array != NULL && cJSON_IsArray(url_array)) {
+                cJSON *first_url = cJSON_GetArrayItem(url_array, 0);
+                if (first_url != NULL && cJSON_IsString(first_url)) {
+                    image_url = cJSON_GetStringValue(first_url);
+                    if (image_url != NULL && image_url[0] != '\0') {
+                        has_image = true;
+                        PR_DEBUG("Found image URL: %s", image_url);
+                    }
+                }
+            }
+        }
+    }
+
     node = cJSON_GetObjectItem(node, "content");
     const char *content = cJSON_GetStringValue(node);
 
@@ -168,9 +190,39 @@ static OPERATE_RET _parse_nlg(cJSON *json, uint8_t eof)
     }
 
     if (AI_AGENT_CHAT_STREAM_DATA == sg_ai.stream_status) {
+        // If we have an image URL and this is the end of stream, handle image
+        if (has_image && image_url != NULL && eof) {
+            // Send image URL as special data (we'll handle this in app_chat_bot.c)
+            // Use a special marker to indicate this is an image URL
+            ai_msg.type = AI_AGENT_MSG_TP_TEXT_NLG_STOP;
+            ai_msg.data_len = strlen(image_url);
+            ai_msg.data = (uint8_t *)image_url;
+            
+            // Set a flag in data_len high bit to indicate this is image URL
+            // Actually, we'll pass it as regular data and check in callback
+            
+            if (sg_ai.cbs.ai_agent_msg_cb) {
+                sg_ai.cbs.ai_agent_msg_cb(&ai_msg);
+            }
+            
+            // Stop the stream and don't send text content
+            sg_ai.stream_status = AI_AGENT_CHAT_STREAM_STOP;
+            return OPRT_OK;
+        }
+        
+        // Normal text content handling
         ai_msg.type = (eof ? AI_AGENT_MSG_TP_TEXT_NLG_STOP : AI_AGENT_MSG_TP_TEXT_NLG_DATA);
-        ai_msg.data_len = strlen(content);
-        ai_msg.data = (uint8_t *)content;
+        // If we have image, skip text content to prevent AI from reading URL
+        if (has_image) {
+            ai_msg.data_len = 0;
+            ai_msg.data = NULL;
+        } else if (content != NULL) {
+            ai_msg.data_len = strlen(content);
+            ai_msg.data = (uint8_t *)content;
+        } else {
+            ai_msg.data_len = 0;
+            ai_msg.data = NULL;
+        }
 
         if (sg_ai.cbs.ai_agent_msg_cb) {
             sg_ai.cbs.ai_agent_msg_cb(&ai_msg);

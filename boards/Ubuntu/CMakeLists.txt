@@ -13,6 +13,7 @@ set(MODULE_NAME "Ubuntu")
 set(LIB_SRCS
     ${MODULE_PATH}/board_com_api.c
     ${MODULE_PATH}/keyboard_input.c
+    ${MODULE_PATH}/tkl_vad.c
 )
 
 # LIB_PUBLIC_INC

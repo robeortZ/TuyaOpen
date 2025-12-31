@@ -1,0 +1,1397 @@
+/**
+ * @file app_web_server.c
+ * @brief Simple HTTP web server implementation for chat history display
+ * @version 0.1
+ * @date 2025-12-05
+ */
+
+#include "app_web_server.h"
+#include "app_chat_history.h"
+#include "ai_audio_agent.h"
+#include "tuya_ai_client.h"
+#include "tal_api.h"
+#include "tal_network.h"
+#include "tal_log.h"
+#include "tal_mutex.h"
+#include "tal_memory.h"
+#include "tal_time_service.h"
+#include "netmgr.h"
+#include <string.h>
+#include <stdio.h>
+
+/***********************************************************
+************************macro define************************
+***********************************************************/
+#define HTTP_BUFFER_SIZE 8192
+#define HTTP_RESPONSE_HEADER "HTTP/1.1 200 OK\r\n" \
+                             "Content-Type: %s\r\n" \
+                             "Access-Control-Allow-Origin: *\r\n" \
+                             "Cache-Control: no-cache, no-store, must-revalidate\r\n" \
+                             "Pragma: no-cache\r\n" \
+                             "Expires: 0\r\n" \
+                             "Connection: close\r\n\r\n"
+#define SSE_HEADER "HTTP/1.1 200 OK\r\n" \
+                   "Content-Type: text/event-stream\r\n" \
+                   "Cache-Control: no-cache\r\n" \
+                   "Connection: keep-alive\r\n" \
+                   "Access-Control-Allow-Origin: *\r\n\r\n"
+
+/***********************************************************
+***********************variable define**********************
+***********************************************************/
+#define MAX_SSE_CLIENTS 3  // Reduced to prevent resource exhaustion
+
+typedef struct {
+    int sock_fd;
+    bool active;
+    THREAD_HANDLE thread_handle;
+} SSE_CLIENT_T;
+
+static THREAD_HANDLE sg_web_server_thread = NULL;
+static bool sg_server_running = false;
+static SSE_CLIENT_T sg_sse_clients[MAX_SSE_CLIENTS] = {0};
+static uint32_t sg_sse_client_count = 0;
+static MUTEX_HANDLE sg_sse_clients_mutex = NULL;
+
+/***********************************************************
+***********************function define**********************
+***********************************************************/
+
+// HTML page content
+static const char *html_page = 
+"<!DOCTYPE html>\n"
+"<html lang=\"zh-CN\">\n"
+"<head>\n"
+"    <meta charset=\"UTF-8\">\n"
+"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+"    <title>智能焊台</title>\n"
+"    <style>\n"
+"        * { margin: 0; padding: 0; box-sizing: border-box; }\n"
+"        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; background: #f5f5f5; }\n"
+"        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }\n"
+"        .header { background: linear-gradient(135deg, #07c160 0%, #06ad56 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center; position: relative; }\n"
+"        .header h1 { font-size: 24px; font-weight: 500; margin-bottom: 5px; }\n"
+"        .header .subtitle { font-size: 12px; opacity: 0.85; letter-spacing: 1px; }\n"
+"        .chat-container { background: white; padding: 20px; min-height: 400px; max-height: 60vh; overflow-y: auto; scroll-behavior: smooth; }\n"
+"        .message { margin-bottom: 20px; display: flex; animation: fadeIn 0.3s ease-out; }\n"
+"        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }\n"
+"        .message.new { animation: slideIn 0.4s ease-out; }\n"
+"        @keyframes slideIn { from { opacity: 0; transform: translateY(20px) scale(0.95); } to { opacity: 1; transform: translateY(0) scale(1); } }\n"
+"        .message.user { justify-content: flex-end; }\n"
+"        .message.assistant { justify-content: flex-start; }\n"
+"        .message-content { max-width: 70%; padding: 12px 16px; border-radius: 8px; word-wrap: break-word; position: relative; }\n"
+"        .message.user .message-content { background: #95ec69; border-radius: 8px 8px 0 8px; }\n"
+"        .message.assistant .message-content { background: #e5e5e5; border-radius: 8px 8px 8px 0; }\n"
+"        .message-avatar { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: bold; flex-shrink: 0; margin-right: 12px; color: white; }\n"
+"        .message.user .message-avatar { background: #07c160; margin-right: 0; margin-left: 12px; }\n"
+"        .message.assistant .message-avatar { background: #888; }\n"
+"        .message-content-wrapper { display: flex; align-items: flex-start; }\n"
+"        .message.user .message-content-wrapper { flex-direction: row-reverse; }\n"
+"        .message-time { font-size: 11px; color: #999; margin-top: 4px; }\n"
+"        .status { text-align: center; padding: 10px; color: #666; font-size: 14px; }\n"
+"        .loading { text-align: center; padding: 20px; color: #999; }\n"
+"        .empty { text-align: center; padding: 40px; color: #999; }\n"
+"        .streaming-cursor { display: inline-block; animation: blink 1s infinite; color: #07c160; font-weight: bold; }\n"
+"        .message-content a { color: #1a73e8; text-decoration: underline; word-break: break-all; }\n"
+"        .message-content a:hover { color: #0d47a1; }\n"
+"        .message.user .message-content a { color: #90caf9; }\n"
+"        .message.user .message-content a:hover { color: #bbdefb; }\n"
+"        @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }\n"
+"        .message-image { max-width: 100%; max-height: 400px; border-radius: 8px; margin-top: 8px; cursor: pointer; display: block; }\n"
+"        .message-image:hover { opacity: 0.9; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }\n"
+"        ::-webkit-scrollbar { width: 6px; }\n"
+"        ::-webkit-scrollbar-track { background: #f1f1f1; }\n"
+"        ::-webkit-scrollbar-thumb { background: #888; border-radius: 3px; }\n"
+"        ::-webkit-scrollbar-thumb:hover { background: #555; }\n"
+"        .input-container { background: white; padding: 15px 20px; border-top: 1px solid #e5e5e5; border-radius: 0 0 8px 8px; display: flex; gap: 10px; align-items: center; }\n"
+"        .input-box { flex: 1; padding: 12px 16px; border: 1px solid #ddd; border-radius: 24px; font-size: 14px; outline: none; transition: border-color 0.2s; }\n"
+"        .input-box:focus { border-color: #07c160; }\n"
+"        .input-box:disabled { background: #f5f5f5; color: #999; }\n"
+"        .send-btn { background: #07c160; color: white; border: none; padding: 12px 24px; border-radius: 24px; font-size: 14px; cursor: pointer; transition: background 0.2s, transform 0.1s; display: flex; align-items: center; gap: 6px; }\n"
+"        .send-btn:hover { background: #06ad56; }\n"
+"        .send-btn:active { transform: scale(0.95); }\n"
+"        .send-btn:disabled { background: #ccc; cursor: not-allowed; transform: none; }\n"
+"        .send-btn .spinner { width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; display: none; }\n"
+"        .send-btn.loading .spinner { display: inline-block; }\n"
+"        .send-btn.loading .btn-text { display: none; }\n"
+"        @keyframes spin { to { transform: rotate(360deg); } }\n"
+"        .status-bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 15px; background: #fafafa; border-top: 1px solid #eee; font-size: 12px; color: #666; }\n"
+"        .connection-status { display: flex; align-items: center; gap: 5px; }\n"
+"        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; }\n"
+"        .status-dot.connected { background: #07c160; }\n"
+"        .status-dot.disconnected { background: #ff4d4f; }\n"
+"    </style>\n"
+"</head>\n"
+"<body>\n"
+"    <div class=\"container\">\n"
+"        <div class=\"header\">\n"
+"            <h1>智能焊台聊天记录</h1>\n"
+"            <div class=\"subtitle\">From Tuya Open</div>\n"
+"        </div>\n"
+"        <div class=\"chat-container\" id=\"chatContainer\">\n"
+"            <div class=\"loading\" id=\"loading\">加载中...</div>\n"
+"        </div>\n"
+"        <div class=\"input-container\">\n"
+"            <input type=\"text\" class=\"input-box\" id=\"messageInput\" placeholder=\"输入消息...\" maxlength=\"500\" />\n"
+"            <button class=\"send-btn\" id=\"sendBtn\" onclick=\"sendMessage()\">\n"
+"                <span class=\"btn-text\">发送</span>\n"
+"                <span class=\"spinner\"></span>\n"
+"            </button>\n"
+"        </div>\n"
+"        <div class=\"status-bar\">\n"
+"            <div class=\"connection-status\">\n"
+"                <span class=\"status-dot\" id=\"statusDot\"></span>\n"
+"                <span id=\"connectionText\">检测中...</span>\n"
+"            </div>\n"
+"            <div id=\"status\">准备就绪</div>\n"
+"        </div>\n"
+"    </div>\n"
+"    <script>\n"
+"        // Wait for DOM to be fully loaded before accessing elements\n"
+"        let chatContainer = null;\n"
+"        let statusDiv = null;\n"
+"        let lastCount = 0;\n"
+"        let lastVersion = 0; // Version for smart polling\n"
+"        let lastMessagesHash = ''; // Hash of last messages to detect changes\n"
+"        let messageElements = []; // Cache of message elements for incremental updates\n"
+"        let isSending = false; // Flag to prevent duplicate sends\n"
+"        let isAiConnected = false; // AI connection status\n"
+"        \n"
+"        // Initialize DOM references when page loads\n"
+"        function initDOMElements() {\n"
+"            if (!chatContainer) {\n"
+"                chatContainer = document.getElementById('chatContainer');\n"
+"            }\n"
+"            if (!statusDiv) {\n"
+"                statusDiv = document.getElementById('status');\n"
+"            }\n"
+"            return chatContainer && statusDiv;\n"
+"        }\n"
+"\n"
+"        function formatTime(timestamp) {\n"
+"            const date = new Date(timestamp * 1000);\n"
+"            return date.toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });\n"
+"        }\n"
+"\n"
+"        // Convert URLs in text to clickable links\n"
+"        function linkify(text) {\n"
+"            if (!text) return '';\n"
+"            // First: handle Markdown links [text](url)\n"
+"            let result = text.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, function(match, linkText, url) {\n"
+"                let href = url;\n"
+"                if (url.indexOf('http') !== 0) {\n"
+"                    href = 'http://' + url;\n"
+"                }\n"
+"                return '<a href=\"' + href + '\" target=\"_blank\" rel=\"noopener noreferrer\">' + linkText + '</a>';\n"
+"            });\n"
+"            // Second: handle plain URLs (http://, https://, www.)\n"
+"            result = result.replace(/(^|[^\"'>])(https?:\\/\\/[^\\s<>\"'\\)]+|www\\.[^\\s<>\"'\\)]+)/gi, function(match, prefix, url) {\n"
+"                let href = url;\n"
+"                if (url.indexOf('http') !== 0) {\n"
+"                    href = 'http://' + url;\n"
+"                }\n"
+"                return prefix + '<a href=\"' + href + '\" target=\"_blank\" rel=\"noopener noreferrer\">' + url + '</a>';\n"
+"            });\n"
+"            return result;\n"
+"        }\n"
+"\n"
+"        // Smooth scroll to bottom\n"
+"        function scrollToBottom(smooth = true) {\n"
+"            if (!chatContainer) return;\n"
+"            if (smooth) {\n"
+"                chatContainer.scrollTo({\n"
+"                    top: chatContainer.scrollHeight,\n"
+"                    behavior: 'smooth'\n"
+"                });\n"
+"            } else {\n"
+"                chatContainer.scrollTop = chatContainer.scrollHeight;\n"
+"            }\n"
+"        }\n"
+"\n"
+"        // Generate a simple hash for messages to detect changes\n"
+"        function getMessagesHash(messages) {\n"
+"            if (!messages || messages.length === 0) return '0';\n"
+"            // Use count + last message text length (more precise)\n"
+"            const lastMsg = messages[messages.length - 1];\n"
+"            const textLen = lastMsg.text ? lastMsg.text.length : 0;\n"
+"            return `${messages.length}-${lastMsg.type}-${textLen}`;\n"
+"        }\n"
+"\n"
+"        // Update only the text content of the last message (for streaming)\n"
+"        function updateLastMessage(msg, isStreaming) {\n"
+"            if (messageElements.length === 0) return false;\n"
+"            \n"
+"            const lastEl = messageElements[messageElements.length - 1];\n"
+"            if (!lastEl) return false;\n"
+"            \n"
+"            const contentDiv = lastEl.querySelector('.message-content > div:first-child');\n"
+"            if (!contentDiv) return false;\n"
+"            \n"
+"            // Get current text (without cursor)\n"
+"            const currentText = contentDiv.textContent || '';\n"
+"            const currentMsgText = currentText.replace(/▊/g, '').trim();\n"
+"            \n"
+"            // Prepare new text content\n"
+"            let newText = msg.text || '';\n"
+"            \n"
+"            // Only update if text actually changed\n"
+"            if (currentMsgText === newText && !isStreaming) {\n"
+"                return true; // No change needed\n"
+"            }\n"
+"            \n"
+"            // Build new HTML content with links\n"
+"            let htmlContent = newText ? linkify(newText).replace(/\\n/g, '<br>') : '';\n"
+"            \n"
+"            // Add streaming cursor if needed\n"
+"            if (isStreaming) {\n"
+"                htmlContent += '<span class=\"streaming-cursor\">▊</span>';\n"
+"            }\n"
+"            \n"
+"            // Update content\n"
+"            contentDiv.innerHTML = htmlContent;\n"
+"            \n"
+"            // Smooth scroll to show new text if streaming\n"
+"            if (isStreaming) {\n"
+"                requestAnimationFrame(() => {\n"
+"                    scrollToBottom(true);\n"
+"                });\n"
+"            }\n"
+"            \n"
+"            return true;\n"
+"        }\n"
+"\n"
+"        function renderMessages(data) {\n"
+"            // Safety check: ensure DOM elements exist\n"
+"            if (!chatContainer || !statusDiv) {\n"
+"                console.error('DOM elements not found');\n"
+"                return;\n"
+"            }\n"
+"            \n"
+"            const messages = data.messages || [];\n"
+"            const isStreaming = data.is_streaming === true; // Use backend streaming status\n"
+"            \n"
+"            // Generate hash to detect changes\n"
+"            const currentHash = getMessagesHash(messages);\n"
+"            \n"
+"            // If hash hasn't changed, only update last message text\n"
+"            if (currentHash === lastMessagesHash && messages.length > 0) {\n"
+"                const lastMsg = messages[messages.length - 1];\n"
+"                \n"
+"                // Try to update only the last message text content\n"
+"                if (updateLastMessage(lastMsg, isStreaming)) {\n"
+"                    // Scroll to bottom if streaming (smooth scroll)\n"
+"                    if (isStreaming) {\n"
+"                        scrollToBottom(true);\n"
+"                    }\n"
+"                    return; // No need to re-render everything\n"
+"                }\n"
+"            }\n"
+"            \n"
+"            // Hash changed - check if it's just the last message text length\n"
+"            if (messages.length === lastCount && messages.length > 0) {\n"
+"                const lastMsg = messages[messages.length - 1];\n"
+"                \n"
+"                // Try incremental update first\n"
+"                if (updateLastMessage(lastMsg, isStreaming)) {\n"
+"                    lastMessagesHash = currentHash; // Update hash\n"
+"                    if (isStreaming) {\n"
+"                        scrollToBottom(true);\n"
+"                    }\n"
+"                    return; // Successfully updated incrementally\n"
+"                }\n"
+"            }\n"
+"            \n"
+"            // Hash changed - check if it's a new message or just text update\n"
+"            lastMessagesHash = currentHash;\n"
+"            \n"
+"            if (messages.length === 0) {\n"
+"                chatContainer.innerHTML = '<div class=\"empty\">暂无聊天记录</div>';\n"
+"                lastCount = 0;\n"
+"                messageElements = [];\n"
+"                statusDiv.textContent = '暂无消息';\n"
+"                return;\n"
+"            }\n"
+"\n"
+"            // Check if we have a new message (message count increased)\n"
+"            if (messages.length > lastCount) {\n"
+"                // New message(s) added - only append new messages, don't re-render all\n"
+"                const newMessages = messages.slice(lastCount);\n"
+"                \n"
+"                requestAnimationFrame(() => {\n"
+"                    // Remove streaming cursor from previous last message\n"
+"                    const oldCursors = chatContainer.querySelectorAll('.streaming-cursor');\n"
+"                    oldCursors.forEach(cursor => cursor.remove());\n"
+"                    \n"
+"                    newMessages.forEach((msg, offset) => {\n"
+"                        const index = lastCount + offset;\n"
+"                        const isUser = msg.type === 0;\n"
+"                        const className = isUser ? 'user' : 'assistant';\n"
+"                        // Use text icons for better compatibility\n"
+"                        const avatarIcon = isUser ? \"U\" : \"AI\";\n"
+"                        \n"
+"                        const isLastMessage = (index === messages.length - 1);\n"
+"                        const showCursor = isStreaming && isLastMessage && !isUser;\n"
+"                        \n"
+"                        let textContent = msg.text ? linkify(msg.text).replace(/\\n/g, '<br>') : '';\n"
+"                        if (showCursor) {\n"
+"                            textContent += '<span class=\"streaming-cursor\">▊</span>';\n"
+"                        }\n"
+"                        \n"
+"                        const messageDiv = document.createElement('div');\n"
+"                        messageDiv.className = `message ${className} new`;\n"
+"                        messageDiv.setAttribute('data-msg-index', index);\n"
+"                        \n"
+"                        const wrapperDiv = document.createElement('div');\n"
+"                        wrapperDiv.className = 'message-content-wrapper';\n"
+"                        \n"
+"                        const avatarDiv = document.createElement('div');\n"
+"                        avatarDiv.className = 'message-avatar';\n"
+"                        avatarDiv.textContent = avatarIcon;\n"
+"                        \n"
+"                        const contentDiv = document.createElement('div');\n"
+"                        contentDiv.className = 'message-content';\n"
+"                        \n"
+"                        const textDiv = document.createElement('div');\n"
+"                        textDiv.innerHTML = textContent;\n"
+"                        \n"
+"                        // Add image if present\n"
+"                        if (msg.image_url && msg.image_url.length > 0) {\n"
+"                            const imgDiv = document.createElement('img');\n"
+"                            imgDiv.className = 'message-image';\n"
+"                            imgDiv.src = msg.image_url;\n"
+"                            imgDiv.alt = 'Generated image';\n"
+"                            imgDiv.onclick = function() { window.open(msg.image_url, '_blank'); };\n"
+"                            imgDiv.onerror = function() { this.style.display = 'none'; };\n"
+"                            contentDiv.appendChild(imgDiv);\n"
+"                        }\n"
+"                        \n"
+"                        const timeDiv = document.createElement('div');\n"
+"                        timeDiv.className = 'message-time';\n"
+"                        timeDiv.textContent = formatTime(msg.timestamp);\n"
+"                        \n"
+"                        contentDiv.appendChild(textDiv);\n"
+"                        contentDiv.appendChild(timeDiv);\n"
+"                        wrapperDiv.appendChild(avatarDiv);\n"
+"                        wrapperDiv.appendChild(contentDiv);\n"
+"                        messageDiv.appendChild(wrapperDiv);\n"
+"                        \n"
+"                        chatContainer.appendChild(messageDiv);\n"
+"                        messageElements.push(messageDiv);\n"
+"                        \n"
+"                        // Remove 'new' class after animation\n"
+"                        setTimeout(() => {\n"
+"                            messageDiv.classList.remove('new');\n"
+"                        }, 400);\n"
+"                    });\n"
+"                    \n"
+"                    lastCount = messages.length;\n"
+"                    \n"
+"                    // Smooth scroll to bottom to show new message\n"
+"                    scrollToBottom(true);\n"
+"                    if (statusDiv) {\n"
+"                        statusDiv.textContent = `共 ${messages.length} 条消息`;\n"
+"                    }\n"
+"                });\n"
+"                \n"
+"                return; // Only added new messages, didn't touch existing ones\n"
+"            }\n"
+"\n"
+"            // Message count same but hash changed - must be last message text updated\n"
+"            // This should have been handled above, but if we reach here, do full render as fallback\n"
+"            lastCount = messages.length;\n"
+"\n"
+"            let html = '';\n"
+"            messages.forEach((msg, index) => {\n"
+"                // Add image HTML if present\n"
+"                let imageHtml = '';\n"
+"                if (msg.image_url && msg.image_url.length > 0) {\n"
+"                    const escapedUrl = msg.image_url.replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\n"
+"                    imageHtml = `<img class=\"message-image\" src=\"${escapedUrl}\" alt=\"Generated image\" onclick=\"window.open('${escapedUrl}', '_blank')\" onerror=\"this.style.display='none'\" />`;\n"
+"                }\n"
+"                const isUser = msg.type === 0;\n"
+"                const className = isUser ? 'user' : 'assistant';\n"
+"                // Use text icons for better compatibility\n"
+"                const avatarIcon = isUser ? 'U' : 'AI';\n"
+"                \n"
+"                const isLastMessage = (index === messages.length - 1);\n"
+"                const showCursor = isStreaming && isLastMessage && !isUser;\n"
+"                \n"
+"                let textContent = msg.text ? linkify(msg.text).replace(/\\n/g, '<br>') : '';\n"
+"                if (showCursor) {\n"
+"                    textContent += '<span class=\"streaming-cursor\">▊</span>';\n"
+"                }\n"
+"                \n"
+"                // Use text icons for better compatibility\n"
+"                const avatarText = isUser ? \"U\" : \"AI\";\n"
+"                html += `\n"
+"                    <div class=\"message ${className}\" data-msg-index=\"${index}\">\n"
+"                        <div class=\"message-content-wrapper\">\n"
+"                            <div class=\"message-avatar\">${avatarText}</div>\n"
+"                            <div class=\"message-content\">\n"
+"                                <div>${textContent}</div>\n"
+"                                ${imageHtml}\n"
+"                                <div class=\"message-time\">${formatTime(msg.timestamp)}</div>\n"
+"                            </div>\n"
+"                        </div>\n"
+"                    </div>\n"
+"                `;\n"
+"            });\n"
+"            \n"
+"            // Double-check elements exist before modifying\n"
+"            if (!chatContainer || !statusDiv) {\n"
+"                console.error('DOM elements lost, reinitializing...');\n"
+"                if (!initDOMElements()) {\n"
+"                    console.error('Failed to reinitialize DOM elements');\n"
+"                    return;\n"
+"                }\n"
+"            }\n"
+"            \n"
+"            // Full render only as last resort (should rarely happen)\n"
+"            requestAnimationFrame(() => {\n"
+"                chatContainer.innerHTML = html;\n"
+"                // Cache message elements for incremental updates\n"
+"                messageElements = Array.from(chatContainer.querySelectorAll('.message'));\n"
+"                \n"
+"                scrollToBottom(false);\n"
+"                if (statusDiv) {\n"
+"                    statusDiv.textContent = `共 ${messages.length} 条消息`;\n"
+"                }\n"
+"            });\n"
+"        }\n"
+"\n"
+"        let isLoading = false;\n"
+"        let refreshCount = 0;\n"
+"        \n"
+"        function loadMessages() {\n"
+"            // Ensure DOM elements are available\n"
+"            if (!initDOMElements()) {\n"
+"                console.warn('DOM elements not ready, skipping load');\n"
+"                return;\n"
+"            }\n"
+"            \n"
+"            // Prevent concurrent requests\n"
+"            if (isLoading) {\n"
+"                return;\n"
+"            }\n"
+"            \n"
+"            isLoading = true;\n"
+"            refreshCount++;\n"
+"            \n"
+"            try {\n"
+"                // Add version parameter to check if update is needed\n"
+"                const timestamp = new Date().getTime();\n"
+"                const url = lastVersion > 0 ? \n"
+"                    `/api/chat?t=${timestamp}&version=${lastVersion}` : \n"
+"                    `/api/chat?t=${timestamp}`;\n"
+"                \n"
+"                // Create abort controller for timeout\n"
+"                const controller = new AbortController();\n"
+"                const timeoutId = setTimeout(() => controller.abort(), 5000);\n"
+"                \n"
+"                fetch(url, { \n"
+"                    method: 'GET', \n"
+"                    cache: 'no-cache',\n"
+"                    headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },\n"
+"                    signal: controller.signal\n"
+"                })\n"
+"                    .then(response => {\n"
+"                        // Handle 304 Not Modified (no update needed)\n"
+"                        if (response.status === 304) {\n"
+"                            return null; // No update\n"
+"                        }\n"
+"                        if (!response.ok) {\n"
+"                            throw new Error('HTTP ' + response.status);\n"
+"                        }\n"
+"                        return response.json();\n"
+"                    })\n"
+"                    .then(data => {\n"
+"                        // If 304 Not Modified, no update needed - just return\n"
+"                        if (data === null) {\n"
+"                            return; // No changes, skip update completely\n"
+"                        }\n"
+"                        \n"
+"                        if (data && data.messages) {\n"
+"                            // Update version if provided\n"
+"                            const oldVersion = lastVersion;\n"
+"                            if (data.version !== undefined) {\n"
+"                                lastVersion = data.version;\n"
+"                            }\n"
+"                            \n"
+"                            // Only render if version actually changed\n"
+"                            if (lastVersion !== oldVersion || oldVersion === 0) {\n"
+"                                renderMessages(data);\n"
+"                            }\n"
+"                        } else {\n"
+"                            console.warn('Invalid data format:', data);\n"
+"                        }\n"
+"                    })\n"
+"                    .catch(error => {\n"
+"                        if (error.name !== 'AbortError') {\n"
+"                            console.error('Error loading messages:', error);\n"
+"                        }\n"
+"                        // Don't show error if we already have messages displayed\n"
+"                        if (lastCount === 0 && chatContainer) {\n"
+"                            chatContainer.innerHTML = '<div class=\"empty\">加载失败，请刷新重试</div>';\n"
+"                        }\n"
+"                    })\n"
+"                    .finally(() => {\n"
+"                        clearTimeout(timeoutId);\n"
+"                        isLoading = false;\n"
+"                        // Always hide loading indicator\n"
+"                        const loadingEl = document.getElementById('loading');\n"
+"                        if (loadingEl) {\n"
+"                            loadingEl.style.display = 'none';\n"
+"                        }\n"
+"                    });\n"
+"            } catch (error) {\n"
+"                console.error('Exception in loadMessages:', error);\n"
+"                isLoading = false;\n"
+"            }\n"
+"        }\n"
+"\n"
+"        // Send text message to AI\n"
+"        function sendMessage() {\n"
+"            const input = document.getElementById('messageInput');\n"
+"            const sendBtn = document.getElementById('sendBtn');\n"
+"            const message = input ? input.value.trim() : '';\n"
+"            \n"
+"            if (!message || isSending) return;\n"
+"            \n"
+"            if (!isAiConnected) {\n"
+"                alert('AI服务未连接，请稍后重试');\n"
+"                return;\n"
+"            }\n"
+"            \n"
+"            isSending = true;\n"
+"            if (sendBtn) {\n"
+"                sendBtn.classList.add('loading');\n"
+"                sendBtn.disabled = true;\n"
+"            }\n"
+"            if (input) input.disabled = true;\n"
+"            \n"
+"            fetch('/api/send', {\n"
+"                method: 'POST',\n"
+"                headers: { 'Content-Type': 'application/json' },\n"
+"                body: JSON.stringify({ message: message })\n"
+"            })\n"
+"            .then(response => response.json())\n"
+"            .then(data => {\n"
+"                if (data.success) {\n"
+"                    if (input) input.value = '';\n"
+"                    // Force refresh to show the new message\n"
+"                    loadMessages();\n"
+"                } else {\n"
+"                    alert('发送失败: ' + (data.error || '未知错误'));\n"
+"                }\n"
+"            })\n"
+"            .catch(error => {\n"
+"                console.error('Send error:', error);\n"
+"                alert('发送失败，请检查网络连接');\n"
+"            })\n"
+"            .finally(() => {\n"
+"                isSending = false;\n"
+"                if (sendBtn) {\n"
+"                    sendBtn.classList.remove('loading');\n"
+"                    sendBtn.disabled = false;\n"
+"                }\n"
+"                if (input) {\n"
+"                    input.disabled = false;\n"
+"                    input.focus();\n"
+"                }\n"
+"            });\n"
+"        }\n"
+"        \n"
+"        // Check AI connection status\n"
+"        function checkAiStatus() {\n"
+"            fetch('/api/status')\n"
+"            .then(response => response.json())\n"
+"            .then(data => {\n"
+"                isAiConnected = data.ai_ready === true;\n"
+"                const dot = document.getElementById('statusDot');\n"
+"                const text = document.getElementById('connectionText');\n"
+"                if (dot && text) {\n"
+"                    if (isAiConnected) {\n"
+"                        dot.className = 'status-dot connected';\n"
+"                        text.textContent = 'AI已连接';\n"
+"                    } else {\n"
+"                        dot.className = 'status-dot disconnected';\n"
+"                        text.textContent = 'AI未连接';\n"
+"                    }\n"
+"                }\n"
+"            })\n"
+"            .catch(() => {\n"
+"                isAiConnected = false;\n"
+"                const dot = document.getElementById('statusDot');\n"
+"                const text = document.getElementById('connectionText');\n"
+"                if (dot && text) {\n"
+"                    dot.className = 'status-dot disconnected';\n"
+"                    text.textContent = '连接失败';\n"
+"                }\n"
+"            });\n"
+"        }\n"
+"        \n"
+"        // Handle Enter key to send message\n"
+"        document.addEventListener('keydown', function(e) {\n"
+"            if (e.key === 'Enter' && !e.shiftKey) {\n"
+"                const input = document.getElementById('messageInput');\n"
+"                if (document.activeElement === input) {\n"
+"                    e.preventDefault();\n"
+"                    sendMessage();\n"
+"                }\n"
+"            }\n"
+"        });\n"
+"        \n"
+"        // Wait for DOM to be fully loaded before starting\n"
+"        function startApp() {\n"
+"            // Initialize DOM elements\n"
+"            if (!initDOMElements()) {\n"
+"                console.error('Failed to initialize DOM elements');\n"
+"                return;\n"
+"            }\n"
+"            \n"
+"            // Check AI status initially and periodically\n"
+"            checkAiStatus();\n"
+"            setInterval(checkAiStatus, 5000); // Check every 5 seconds\n"
+"            \n"
+"            // Load initial messages\n"
+"            loadMessages();\n"
+"\n"
+"            // Smart update check: only refresh when version changes\n"
+"            // Check version every 1 second, but only update DOM when version actually changes\n"
+"            let checkInterval = 1000; // Check every 1 second\n"
+"            let isChecking = false; // Prevent concurrent checks\n"
+"            \n"
+"            function checkForUpdates() {\n"
+"                // Prevent concurrent checks\n"
+"                if (isChecking) {\n"
+"                    return;\n"
+"                }\n"
+"                \n"
+"                isChecking = true;\n"
+"                \n"
+"                // Only check version, don't load full data if version matches\n"
+"                const timestamp = new Date().getTime();\n"
+"                const url = lastVersion > 0 ? \n"
+"                    `/api/chat?t=${timestamp}&version=${lastVersion}` : \n"
+"                    `/api/chat?t=${timestamp}`;\n"
+"                \n"
+"                fetch(url, { \n"
+"                    method: 'GET', \n"
+"                    cache: 'no-cache',\n"
+"                    headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }\n"
+"                })\n"
+"                .then(response => {\n"
+"                    // If 304, no update needed\n"
+"                    if (response.status === 304) {\n"
+"                        return null;\n"
+"                    }\n"
+"                    // If version changed, load full data\n"
+"                    if (response.ok) {\n"
+"                        return response.json();\n"
+"                    }\n"
+"                    throw new Error('HTTP ' + response.status);\n"
+"                })\n"
+"                .then(data => {\n"
+"                    if (data && data.messages) {\n"
+"                        // Version changed, update UI\n"
+"                        const oldVersion = lastVersion;\n"
+"                        if (data.version !== undefined) {\n"
+"                            lastVersion = data.version;\n"
+"                        }\n"
+"                        \n"
+"                        // Only render if version actually changed\n"
+"                        if (lastVersion !== oldVersion || oldVersion === 0) {\n"
+"                            renderMessages(data);\n"
+"                        }\n"
+"                    }\n"
+"                })\n"
+"                .catch(error => {\n"
+"                    if (error.name !== 'AbortError') {\n"
+"                        console.error('Error checking for updates:', error);\n"
+"                    }\n"
+"                })\n"
+"                .finally(() => {\n"
+"                    isChecking = false;\n"
+"                    // Schedule next check after current one completes\n"
+"                    setTimeout(checkForUpdates, checkInterval);\n"
+"                });\n"
+"            }\n"
+"            \n"
+"            // Start update check loop\n"
+"            checkForUpdates();\n"
+"            console.log('Update checker started, checking every', checkInterval + 'ms (only updates DOM when version changes)');\n"
+"        }\n"
+"        \n"
+"        // Start app when DOM is ready\n"
+"        if (document.readyState === 'loading') {\n"
+"            document.addEventListener('DOMContentLoaded', startApp);\n"
+"        } else {\n"
+"            // DOM already loaded\n"
+"            startApp();\n"
+"        }\n"
+"    </script>\n"
+"</body>\n"
+"</html>\n";
+
+static void __send_http_response(int sock_fd, const char *content_type, const char *body, uint32_t body_len)
+{
+    char header[512];
+    snprintf(header, sizeof(header), HTTP_RESPONSE_HEADER, content_type);
+    
+    int sent = tal_net_send(sock_fd, (uint8_t *)header, strlen(header));
+    if (sent < 0) {
+        PR_WARN("Failed to send HTTP header");
+        return;
+    }
+    
+    if (body && body_len > 0) {
+        sent = tal_net_send(sock_fd, (uint8_t *)body, body_len);
+        if (sent < 0) {
+            PR_WARN("Failed to send HTTP body");
+        }
+    }
+}
+
+static bool __add_sse_client(int sock_fd, THREAD_HANDLE thread_handle)
+{
+    bool added = false;
+    if (sg_sse_clients_mutex) {
+        tal_mutex_lock(sg_sse_clients_mutex);
+    }
+    for (uint32_t i = 0; i < MAX_SSE_CLIENTS; i++) {
+        if (!sg_sse_clients[i].active) {
+            sg_sse_clients[i].sock_fd = sock_fd;
+            sg_sse_clients[i].thread_handle = thread_handle;
+            sg_sse_clients[i].active = true;
+            sg_sse_client_count++;
+            PR_DEBUG("Added SSE client, total: %u", sg_sse_client_count);
+            added = true;
+            if (sg_sse_clients_mutex) {
+                tal_mutex_unlock(sg_sse_clients_mutex);
+            }
+            return added;
+        }
+    }
+    PR_WARN("SSE client list full, cannot add new client");
+    if (sg_sse_clients_mutex) {
+        tal_mutex_unlock(sg_sse_clients_mutex);
+    }
+    return added;
+}
+
+static void __remove_sse_client(int sock_fd)
+{
+    if (sg_sse_clients_mutex) {
+        tal_mutex_lock(sg_sse_clients_mutex);
+    }
+    for (uint32_t i = 0; i < MAX_SSE_CLIENTS; i++) {
+        if (sg_sse_clients[i].active && sg_sse_clients[i].sock_fd == sock_fd) {
+            sg_sse_clients[i].active = false;
+            sg_sse_clients[i].sock_fd = -1;
+            sg_sse_clients[i].thread_handle = NULL;
+            if (sg_sse_client_count > 0) {
+                sg_sse_client_count--;
+            }
+            PR_DEBUG("Removed SSE client, remaining: %u", sg_sse_client_count);
+            if (sg_sse_clients_mutex) {
+                tal_mutex_unlock(sg_sse_clients_mutex);
+            }
+            return;
+        }
+    }
+    if (sg_sse_clients_mutex) {
+        tal_mutex_unlock(sg_sse_clients_mutex);
+    }
+}
+
+static int __send_sse_event(int sock_fd, const char *event, const char *data)
+{
+    if (sock_fd < 0) {
+        return -1;
+    }
+    
+    char sse_msg[512];
+    if (event && data) {
+        snprintf(sse_msg, sizeof(sse_msg), "event: %s\ndata: %s\n\n", event, data);
+    } else if (data) {
+        snprintf(sse_msg, sizeof(sse_msg), "data: %s\n\n", data);
+    } else {
+        snprintf(sse_msg, sizeof(sse_msg), ": keepalive\n\n");
+    }
+    
+    int sent = tal_net_send(sock_fd, (uint8_t *)sse_msg, strlen(sse_msg));
+    if (sent < 0) {
+        PR_DEBUG("Failed to send SSE event to socket %d, client may have disconnected", sock_fd);
+        // Remove client from list (this is safe even if called from notify function
+        // because we already copied the client list)
+        __remove_sse_client(sock_fd);
+        return -1;
+    }
+    return sent;
+}
+
+typedef struct {
+    int sock_fd;
+    THREAD_HANDLE thread_handle;
+} SSE_THREAD_ARGS_T;
+
+static void __sse_client_thread(void *args)
+{
+    if (args == NULL) {
+        PR_ERR("SSE client thread: invalid arguments");
+        return;
+    }
+    
+    SSE_THREAD_ARGS_T *thread_args = (SSE_THREAD_ARGS_T *)args;
+    int sock_fd = thread_args->sock_fd;
+    THREAD_HANDLE self_thread = thread_args->thread_handle;
+    bool client_active = true;
+    
+    if (sock_fd < 0) {
+        PR_ERR("SSE client thread: invalid socket fd");
+        tal_free(thread_args);
+        return;
+    }
+    
+    // Send SSE header
+    int sent = tal_net_send(sock_fd, (uint8_t *)SSE_HEADER, strlen(SSE_HEADER));
+    if (sent < 0) {
+        PR_WARN("Failed to send SSE header");
+        tal_net_close(sock_fd);
+        // Free thread args
+        tal_free(thread_args);
+        return;
+    }
+    
+    // Add client to list
+    // Note: self_thread may be NULL initially, but thread_handle is optional for cleanup
+    if (!__add_sse_client(sock_fd, self_thread)) {
+        // Failed to add client (list full), exit thread
+        PR_WARN("Failed to add SSE client to list, closing connection");
+        tal_net_close(sock_fd);
+        if (thread_args) {
+            tal_free(thread_args);
+        }
+        return;
+    }
+    
+    // If thread_handle was NULL, try to update it now (best effort, not critical)
+    if (self_thread == NULL && thread_args && thread_args->thread_handle) {
+        // Update the thread handle in the client list if it was set after thread creation
+        if (sg_sse_clients_mutex) {
+            tal_mutex_lock(sg_sse_clients_mutex);
+            for (uint32_t i = 0; i < MAX_SSE_CLIENTS; i++) {
+                if (sg_sse_clients[i].active && sg_sse_clients[i].sock_fd == sock_fd && 
+                    sg_sse_clients[i].thread_handle == NULL) {
+                    sg_sse_clients[i].thread_handle = thread_args->thread_handle;
+                    break;
+                }
+            }
+            tal_mutex_unlock(sg_sse_clients_mutex);
+        }
+    }
+    
+    // Send initial keepalive
+    if (__send_sse_event(sock_fd, NULL, NULL) < 0) {
+        // Send failed, client already removed
+        client_active = false;
+    }
+    
+    // Keep connection alive and send keepalive every 30 seconds
+    // Simplified: just send keepalive, rely on send failure to detect disconnection
+    uint32_t keepalive_count = 0;
+    uint32_t no_activity_count = 0;
+    const uint32_t MAX_NO_ACTIVITY = 300; // 5 minutes timeout
+    
+    while (sg_server_running && client_active) {
+        tal_system_sleep(1000);
+        keepalive_count++;
+        no_activity_count++;
+        
+        // Timeout: if no activity for too long, close connection
+        if (no_activity_count >= MAX_NO_ACTIVITY) {
+            PR_DEBUG("SSE client timeout, closing connection for socket %d", sock_fd);
+            client_active = false;
+            break;
+        }
+        
+        // Send keepalive every 30 seconds
+        if (keepalive_count >= 30) {
+            // If send fails, __send_sse_event will remove client and we'll detect it
+            int sent = __send_sse_event(sock_fd, NULL, NULL);
+            if (sent >= 0) {
+                no_activity_count = 0; // Reset timeout on successful send
+            }
+            keepalive_count = 0;
+            
+            // Check if client was removed after send (connection closed)
+            bool found = false;
+            if (sg_sse_clients_mutex) {
+                tal_mutex_lock(sg_sse_clients_mutex);
+                for (uint32_t i = 0; i < MAX_SSE_CLIENTS; i++) {
+                    if (sg_sse_clients[i].active && sg_sse_clients[i].sock_fd == sock_fd) {
+                        found = true;
+                        break;
+                    }
+                }
+                tal_mutex_unlock(sg_sse_clients_mutex);
+            }
+            
+            if (!found) {
+                // Client was removed (connection closed)
+                client_active = false;
+                break;
+            }
+        }
+    }
+    
+    // Remove client and close connection (if not already removed)
+    __remove_sse_client(sock_fd);
+    if (sock_fd >= 0) {
+        tal_net_close(sock_fd);
+    }
+    PR_DEBUG("SSE connection closed for socket %d", sock_fd);
+    
+    // Free thread args
+    if (thread_args) {
+        tal_free(thread_args);
+    }
+}
+
+void app_web_server_notify_new_message(void)
+{
+    if (!sg_sse_clients_mutex || !sg_server_running) {
+        return; // Mutex not initialized yet or server not running
+    }
+    
+    // Limit notification frequency to avoid overwhelming the system
+    static uint32_t last_notify_time = 0;
+    static uint32_t notify_count = 0;
+    TIME_T current_time = tal_time_get_posix();
+    if (current_time > 0) {
+        if (current_time - last_notify_time < 1) {
+            // Throttle: don't notify more than once per second
+            return;
+        }
+        last_notify_time = (uint32_t)current_time;
+    } else {
+        // Fallback: use simple counter-based throttling if time service unavailable
+        notify_count++;
+        if (notify_count % 10 != 0) {
+            return; // Only notify every 10th call
+        }
+    }
+    
+    // Send event to all connected SSE clients
+    // Make a copy of active clients to avoid holding lock during send
+    int active_clients[MAX_SSE_CLIENTS];
+    uint32_t active_count = 0;
+    
+    tal_mutex_lock(sg_sse_clients_mutex);
+    for (uint32_t i = 0; i < MAX_SSE_CLIENTS && active_count < MAX_SSE_CLIENTS; i++) {
+        if (sg_sse_clients[i].active && sg_sse_clients[i].sock_fd >= 0) {
+            active_clients[active_count++] = sg_sse_clients[i].sock_fd;
+        }
+    }
+    tal_mutex_unlock(sg_sse_clients_mutex);
+    
+    // Send events without holding the lock
+    // If a client disconnects during send, __send_sse_event will handle it safely
+    for (uint32_t i = 0; i < active_count && sg_server_running; i++) {
+        __send_sse_event(active_clients[i], "message", "new_message");
+    }
+}
+
+// Extract JSON field value from request body
+static bool __extract_json_string(const char *json, const char *key, char *value, uint32_t value_size)
+{
+    if (!json || !key || !value || value_size == 0) return false;
+    
+    char search_key[64];
+    snprintf(search_key, sizeof(search_key), "\"%s\"", key);
+    
+    const char *key_pos = strstr(json, search_key);
+    if (!key_pos) return false;
+    
+    const char *colon = strchr(key_pos + strlen(search_key), ':');
+    if (!colon) return false;
+    
+    // Skip whitespace after colon
+    const char *val_start = colon + 1;
+    while (*val_start == ' ' || *val_start == '\t') val_start++;
+    
+    if (*val_start != '"') return false;
+    val_start++; // Skip opening quote
+    
+    // Find closing quote (handle escaped quotes)
+    const char *val_end = val_start;
+    while (*val_end && *val_end != '"') {
+        if (*val_end == '\\' && *(val_end + 1)) {
+            val_end += 2; // Skip escaped character
+        } else {
+            val_end++;
+        }
+    }
+    
+    uint32_t len = val_end - val_start;
+    if (len >= value_size) len = value_size - 1;
+    
+    memcpy(value, val_start, len);
+    value[len] = '\0';
+    
+    return len > 0;
+}
+
+static void __handle_http_request(int sock_fd, const char *request, uint32_t request_len)
+{
+    char path[256] = {0};
+    const char *path_start = NULL;
+    const char *path_end = NULL;
+    bool is_post = false;
+    
+    // Find the path in the HTTP request
+    // Format: "GET /path HTTP/1.1\r\n..." or "POST /path HTTP/1.1\r\n..."
+    if (strncmp(request, "GET ", 4) == 0) {
+        path_start = request + 4;
+    } else if (strncmp(request, "POST ", 5) == 0) {
+        path_start = request + 5;
+        is_post = true;
+    }
+    
+    if (path_start) {
+        path_end = strchr(path_start, ' ');
+        if (path_end == NULL) {
+            path_end = strchr(path_start, '\r');
+        }
+        if (path_end == NULL) {
+            path_end = strchr(path_start, '\n');
+        }
+        if (path_end && path_end > path_start) {
+            uint32_t path_len = path_end - path_start;
+            if (path_len < sizeof(path)) {
+                memcpy(path, path_start, path_len);
+                path[path_len] = '\0';
+                
+                // Remove query string if present
+                char *query = strchr(path, '?');
+                if (query) {
+                    *query = '\0';
+                }
+            }
+        }
+    }
+    
+    if (path[0] == '\0') {
+        // Invalid request - try to extract any path for debugging
+        PR_WARN("Invalid HTTP request (first 200 chars): %.*s", 
+                (int)(request_len > 200 ? 200 : request_len), request);
+        const char *error = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nBad Request";
+        int sent = tal_net_send(sock_fd, (uint8_t *)error, strlen(error));
+        if (sent < 0) {
+            PR_WARN("Failed to send error response");
+        }
+        return;
+    }
+
+    // PR_DEBUG("HTTP request: %s %s", is_post ? "POST" : "GET", path);
+
+    // Route requests
+    if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
+        // Serve HTML page
+        __send_http_response(sock_fd, "text/html; charset=utf-8", html_page, strlen(html_page));
+    } else if (is_post && strcmp(path, "/api/send") == 0) {
+        // Handle POST /api/send - Send text message to AI
+        char response[256] = {0};
+        
+        // Find request body (after \r\n\r\n)
+        const char *body = strstr(request, "\r\n\r\n");
+        if (body) {
+            body += 4; // Skip \r\n\r\n
+        }
+        
+        if (!body || strlen(body) == 0) {
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Empty request body\"}");
+            __send_http_response(sock_fd, "application/json", response, strlen(response));
+            return;
+        }
+        
+        // Check if AI is ready
+        if (!tuya_ai_client_is_ready()) {
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"AI service not connected\"}");
+            __send_http_response(sock_fd, "application/json", response, strlen(response));
+            return;
+        }
+        
+        // Extract message from JSON body
+        char message[512] = {0};
+        if (!__extract_json_string(body, "message", message, sizeof(message))) {
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Invalid JSON format\"}");
+            __send_http_response(sock_fd, "application/json", response, strlen(response));
+            return;
+        }
+        
+        if (strlen(message) == 0) {
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Message is empty\"}");
+            __send_http_response(sock_fd, "application/json", response, strlen(response));
+            return;
+        }
+        
+        PR_NOTICE("Web chat: Sending message to AI: %s", message);
+        
+        // Add user message to chat history
+        app_chat_history_add_message(CHAT_MSG_TYPE_USER, message, strlen(message));
+        
+        // Send text to AI using the text agent API
+        OPERATE_RET rt = ai_text_agent_upload((uint8_t *)message, strlen(message));
+        
+        if (rt == OPRT_OK) {
+            snprintf(response, sizeof(response), "{\"success\":true}");
+        } else {
+            PR_ERR("Failed to send message to AI: %d", rt);
+            snprintf(response, sizeof(response), "{\"success\":false,\"error\":\"Failed to send message (code: %d)\"}", rt);
+        }
+        
+        __send_http_response(sock_fd, "application/json", response, strlen(response));
+    } else if (strcmp(path, "/api/status") == 0) {
+        // Handle GET /api/status - Check AI connection status
+        char response[128] = {0};
+        bool ai_ready = tuya_ai_client_is_ready();
+        snprintf(response, sizeof(response), "{\"ai_ready\":%s}", ai_ready ? "true" : "false");
+        __send_http_response(sock_fd, "application/json", response, strlen(response));
+    } else if (strcmp(path, "/api/chat") == 0) {
+        // Check if client sent version parameter
+        const char *version_param = strstr(request, "version=");
+        uint32_t client_version = 0;
+        if (version_param) {
+            client_version = (uint32_t)atoi(version_param + 8); // Skip "version="
+        }
+        
+        uint32_t server_version = app_chat_history_get_version();
+        
+        // If versions match, return 304 Not Modified (or minimal response)
+        if (client_version > 0 && client_version == server_version) {
+            const char *not_modified = "HTTP/1.1 304 Not Modified\r\n"
+                                       "Content-Type: application/json\r\n"
+                                       "Cache-Control: no-cache\r\n\r\n";
+            tal_net_send(sock_fd, (uint8_t *)not_modified, strlen(not_modified));
+            PR_DEBUG("Client version %u matches server, returning 304", client_version);
+            return;
+        }
+        
+        // Serve JSON API
+        char json_buffer[CHAT_HISTORY_JSON_BUFFER_SIZE] = {0};
+        OPERATE_RET rt = app_chat_history_get_json(json_buffer, sizeof(json_buffer));
+        if (rt == OPRT_OK) {
+            uint32_t json_len = strlen(json_buffer);
+            // PR_DEBUG("Sending JSON response, length: %u, version: %u", json_len, server_version);
+            if (json_len > 0) {
+                __send_http_response(sock_fd, "application/json; charset=utf-8", json_buffer, json_len);
+            } else {
+                // Empty response, send valid empty JSON
+                char empty_json[128];
+                snprintf(empty_json, sizeof(empty_json), "{\"messages\":[],\"count\":0,\"version\":%u}", server_version);
+                __send_http_response(sock_fd, "application/json; charset=utf-8", empty_json, strlen(empty_json));
+            }
+        } else {
+            PR_ERR("Failed to get chat history JSON: %d", rt);
+            char error_json[128];
+            snprintf(error_json, sizeof(error_json), "{\"error\":\"Failed to get chat history\",\"messages\":[],\"count\":0,\"version\":%u}", server_version);
+            __send_http_response(sock_fd, "application/json; charset=utf-8", error_json, strlen(error_json));
+        }
+    } else {
+        // 404 Not Found
+        PR_DEBUG("404 Not Found: %s", path);
+        const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot Found";
+        int sent = tal_net_send(sock_fd, (uint8_t *)not_found, strlen(not_found));
+        if (sent < 0) {
+            PR_WARN("Failed to send 404 response");
+        }
+    }
+}
+
+static void __web_server_task(void *args)
+{
+    int listen_fd = -1;
+    char recv_buf[HTTP_BUFFER_SIZE] = {0};
+
+    PR_NOTICE("Web server starting on port %d", WEB_SERVER_PORT);
+
+    // Create TCP socket
+    listen_fd = tal_net_socket_create(PROTOCOL_TCP);
+    if (listen_fd < 0) {
+        PR_ERR("Failed to create socket");
+        goto cleanup;
+    }
+
+    // Set SO_REUSEADDR option to allow binding even if port is in TIME_WAIT state
+    if (tal_net_set_reuse(listen_fd) != OPRT_OK) {
+        PR_WARN("Failed to set SO_REUSEADDR, continuing anyway");
+    }
+
+    // Bind to port (TY_IPADDR_ANY = 0.0.0.0, binds to all interfaces)
+    if (tal_net_bind(listen_fd, TY_IPADDR_ANY, WEB_SERVER_PORT) != OPRT_OK) {
+        PR_ERR("Failed to bind to port %d", WEB_SERVER_PORT);
+        goto cleanup;
+    }
+
+    // Listen for connections
+    if (tal_net_listen(listen_fd, WEB_SERVER_MAX_CONNECTIONS) != OPRT_OK) {
+        PR_ERR("Failed to listen on port %d", WEB_SERVER_PORT);
+        goto cleanup;
+    }
+
+    PR_NOTICE("Web server listening on port %d", WEB_SERVER_PORT);
+
+    // Accept connections
+    while (sg_server_running) {
+        TUYA_IP_ADDR_T client_ip = 0;
+        uint16_t client_port = 0;
+        int sock_fd = tal_net_accept(listen_fd, &client_ip, &client_port);
+        
+        if (sock_fd < 0) {
+            tal_system_sleep(100);
+            continue;
+        }
+
+        char *client_ip_str = tal_net_addr2str(client_ip);
+        PR_DEBUG("Client connected: %s:%d", client_ip_str, client_port);
+
+        // Receive HTTP request with timeout handling
+        memset(recv_buf, 0, sizeof(recv_buf));
+        int recv_len = 0;
+        int total_recv = 0;
+        uint32_t timeout_count = 0;
+        const uint32_t max_timeout = 50; // 5 seconds total (50 * 100ms)
+        
+        // Try to receive complete HTTP request
+        while (total_recv < sizeof(recv_buf) - 1 && timeout_count < max_timeout) {
+            recv_len = tal_net_recv(sock_fd, recv_buf + total_recv, sizeof(recv_buf) - 1 - total_recv);
+            
+            if (recv_len > 0) {
+                total_recv += recv_len;
+                recv_buf[total_recv] = '\0';
+                
+                // Check if we received complete HTTP request (ends with \r\n\r\n)
+                if (strstr(recv_buf, "\r\n\r\n") != NULL) {
+                    break;
+                }
+                timeout_count = 0; // Reset timeout if we received data
+            } else if (recv_len == 0) {
+                // Connection closed
+                break;
+            } else {
+                // Error or no data, wait a bit
+                tal_system_sleep(100);
+                timeout_count++;
+            }
+        }
+        
+        if (total_recv > 0) {
+            recv_buf[total_recv] = '\0';
+            
+            // SSE is disabled to prevent crashes - reject all SSE connection requests
+            if (strstr(recv_buf, "GET /api/events") != NULL) {
+                PR_DEBUG("SSE connection request rejected (SSE disabled for stability)");
+                const char *sse_disabled = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nSSE disabled - please use polling mode";
+                tal_net_send(sock_fd, (uint8_t *)sse_disabled, strlen(sse_disabled));
+                tal_net_close(sock_fd);
+                continue;
+            } else {
+                // Handle regular HTTP request
+                __handle_http_request(sock_fd, recv_buf, total_recv);
+                // Close connection for regular requests
+                tal_net_close(sock_fd);
+                // PR_DEBUG("Client disconnected: %s:%d", client_ip_str, client_port);
+            }
+        } else {
+            PR_DEBUG("No data received from client %s:%d", client_ip_str, client_port);
+            tal_net_close(sock_fd);
+        }
+    }
+
+cleanup:
+    if (listen_fd >= 0) {
+        tal_net_close(listen_fd);
+    }
+    
+    // Close all SSE client connections
+    if (sg_sse_clients_mutex) {
+        tal_mutex_lock(sg_sse_clients_mutex);
+        for (uint32_t i = 0; i < MAX_SSE_CLIENTS; i++) {
+            if (sg_sse_clients[i].active) {
+                tal_net_close(sg_sse_clients[i].sock_fd);
+                if (sg_sse_clients[i].thread_handle) {
+                    // Note: Thread will exit when socket is closed
+                    // We don't delete thread here as it may still be running
+                }
+                sg_sse_clients[i].active = false;
+                sg_sse_clients[i].sock_fd = -1;
+                sg_sse_clients[i].thread_handle = NULL;
+            }
+        }
+        sg_sse_client_count = 0;
+        tal_mutex_unlock(sg_sse_clients_mutex);
+        
+        tal_mutex_release(sg_sse_clients_mutex);
+        sg_sse_clients_mutex = NULL;
+    }
+    
+    sg_server_running = false;
+    PR_NOTICE("Web server stopped");
+    
+    tal_thread_delete(sg_web_server_thread);
+    sg_web_server_thread = NULL;
+}
+
+OPERATE_RET app_web_server_init(void)
+{
+    if (sg_server_running) {
+        PR_WARN("Web server already running");
+        return OPRT_OK;
+    }
+
+    // Create mutex for SSE clients list
+    OPERATE_RET rt = tal_mutex_create_init(&sg_sse_clients_mutex);
+    if (rt != OPRT_OK) {
+        PR_ERR("Failed to create SSE clients mutex: %d", rt);
+        return rt;
+    }
+
+    sg_server_running = true;
+
+    THREAD_CFG_T thread_cfg = {
+        .thrdname = "web_server",
+        .stackDepth = 8192,
+        .priority = THREAD_PRIO_3,
+    };
+
+    rt = tal_thread_create_and_start(&sg_web_server_thread, NULL, NULL, 
+                                     __web_server_task, NULL, &thread_cfg);
+    if (rt != OPRT_OK) {
+        PR_ERR("Failed to create web server thread");
+        sg_server_running = false;
+        return rt;
+    }
+
+    PR_NOTICE("Web server initialized, access at http://<device-ip>:%d", WEB_SERVER_PORT);
+    return OPRT_OK;
+}
+
+OPERATE_RET app_web_server_deinit(void)
+{
+    if (!sg_server_running) {
+        return OPRT_OK;
+    }
+
+    sg_server_running = false;
+    
+    // Wait for thread to exit
+    if (sg_web_server_thread) {
+        tal_system_sleep(1000);
+    }
+
+    PR_NOTICE("Web server deinitialized");
+    return OPRT_OK;
+}
+
+

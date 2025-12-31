@@ -117,6 +117,24 @@ OPERATE_RET audio_dp_obj_proc(dp_obj_recv_t *dpobj)
 #endif
             break;
         }
+        case 101: {
+            bool mode = dp->value.dp_value;
+            static bool last_mode = false;
+            if (mode == last_mode) {
+                break;
+            }
+            last_mode = mode;
+            PR_DEBUG("mode:%d", mode);
+            if (mode == 1) {
+                char* _serial_text_buf = "亲切打招呼，并询问是否需要控制当前家庭下的联网设备";
+                ai_text_agent_upload(_serial_text_buf, strlen(_serial_text_buf));
+            } else {
+                char *_serial_text_buf = "亲切的告别，并且提示记得关闭焊台电源和风扇电源";
+                ai_text_agent_upload(_serial_text_buf, strlen(_serial_text_buf));
+            }
+            
+            break;
+        }
         default:
             break;
         }
