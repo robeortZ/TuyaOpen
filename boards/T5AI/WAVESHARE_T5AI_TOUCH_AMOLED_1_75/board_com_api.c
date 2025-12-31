@@ -35,12 +35,12 @@
 #define BOARD_LCD_QSPI_PORT        TUYA_QSPI_NUM_0
 #define BOARD_LCD_QSPI_CLK         (80 * 1000000)
 
-#define BOARD_LCD_BL_TYPE          TUYA_DISP_BL_TP_NONE
-
 #define BOARD_LCD_POWER_PIN        TUYA_GPIO_NUM_MAX
    
 #define BOARD_LCD_WIDTH            466
 #define BOARD_LCD_HEIGHT           466
+#define BOARD_LCD_X_OFFSET         6
+#define BOARD_LCD_Y_OFFSET         0
 #define BOARD_LCD_PIXELS_FMT       TUYA_PIXEL_FMT_RGB565
 #define BOARD_LCD_ROTATION         TUYA_DISPLAY_ROTATION_0
    
@@ -152,12 +152,14 @@ static OPERATE_RET __board_register_display(void)
 
     memset(&display_cfg, 0, sizeof(DISP_QSPI_DEVICE_CFG_T));
 
-    display_cfg.bl.type = BOARD_LCD_BL_TYPE;
+    display_cfg.bl.type = TUYA_DISP_BL_TP_CUSTOM;
 
-    display_cfg.width = BOARD_LCD_WIDTH;
-    display_cfg.height = BOARD_LCD_HEIGHT;
+    display_cfg.width     = BOARD_LCD_WIDTH;
+    display_cfg.height    = BOARD_LCD_HEIGHT;
+    display_cfg.x_offset  = BOARD_LCD_X_OFFSET;
+    display_cfg.y_offset  = BOARD_LCD_Y_OFFSET;
     display_cfg.pixel_fmt = BOARD_LCD_PIXELS_FMT;
-    display_cfg.rotation = BOARD_LCD_ROTATION;
+    display_cfg.rotation  = BOARD_LCD_ROTATION;
 
     display_cfg.port = BOARD_LCD_QSPI_PORT;
     display_cfg.spi_clk = BOARD_LCD_QSPI_CLK;
@@ -166,6 +168,10 @@ static OPERATE_RET __board_register_display(void)
     display_cfg.power.pin = BOARD_LCD_POWER_PIN;
 
     TUYA_CALL_ERR_RETURN(tdd_disp_qspi_co5300_register(DISPLAY_NAME, &display_cfg));
+
+    TUYA_CALL_ERR_RETURN(tdl_disp_custom_backlight_register(DISPLAY_NAME,\
+                                                            tdd_qspi_co5300_send_cmd_set_bl,\
+                                                            NULL));
 
     TDD_TP_CST92XX_INFO_T cst92xx_info = {
         .rst_pin = BOARD_TP_RST_PIN,
@@ -192,13 +198,6 @@ static OPERATE_RET __board_register_display(void)
 #endif
 
     return rt;
-}
-
-
-
-OPERATE_RET board_set_brightness(uint8_t value)
-{
-    return tdd_disp_qspi_co5300_set_bl(value);
 }
 
 /**
