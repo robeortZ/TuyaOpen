@@ -91,7 +91,7 @@ static netmgr_type_e __get_active_conn()
         cur_conn->get(NETCONN_CMD_STATUS, &netmgr_status);
         if (netmgr_status == NETMGR_LINK_UP) {
             // return the first connection which is up
-            PR_DEBUG("netmgr active connection [%s]", NETMGR_TYPE_TO_STR(cur_conn->type));
+            PR_TRACE("netmgr active connection [%s]", NETMGR_TYPE_TO_STR(cur_conn->type));
             active_type = cur_conn->type;
             break;
         }
@@ -170,7 +170,7 @@ static OPERATE_RET __get_netmgr_status(netmgr_type_e type, netmgr_status_e *stat
             }
 
             cur_conn->get(NETCONN_CMD_STATUS, status);
-            PR_DEBUG("netmgr conn [%s] status [%s]", NETMGR_TYPE_TO_STR(type), NETMGR_STATUS_TO_STR(*status));
+            PR_TRACE("netmgr conn [%s] status [%s]", NETMGR_TYPE_TO_STR(type), NETMGR_STATUS_TO_STR(*status));
             break;
         }
         cur_conn = cur_conn->next;
@@ -490,8 +490,10 @@ void netmgr_cmd(int argc, char *argv[])
                     PR_INFO("ssid or password too long");
                     return;
                 }
-                strcpy(wifi_info.ssid, argv[3]);
-                strcpy(wifi_info.pswd, argv[4]);
+                strncpy(wifi_info.ssid, argv[3], sizeof(wifi_info.ssid) - 1);
+                wifi_info.ssid[sizeof(wifi_info.ssid) - 1] = '\0';
+                strncpy(wifi_info.pswd, argv[4], sizeof(wifi_info.pswd) - 1);
+                wifi_info.pswd[sizeof(wifi_info.pswd) - 1] = '\0';
                 netmgr_conn_set(NETCONN_WIFI, NETCONN_CMD_SSID_PSWD, &wifi_info);
             } else if (0 == strcmp(argv[2], "down")) {
                 netmgr_conn_set(NETCONN_WIFI, NETCONN_CMD_CLOSE, NULL);

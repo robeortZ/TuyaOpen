@@ -81,6 +81,18 @@ choice
             rsource "./T5AI_OTTO/Kconfig"
         endif
 
+    config BOARD_CHOICE_TUYA_T5AI_PIXEL
+        bool "TUYA_T5AI_PIXEL"
+        if (BOARD_CHOICE_TUYA_T5AI_PIXEL)
+            rsource "./TUYA_T5AI_PIXEL/Kconfig"
+        endif
+
+    config BOARD_CHOICE_TUYA_T5AI_DESKTOP_ROBOT
+        bool "TUYA_T5AI_DESKTOP_ROBOT"
+        if (BOARD_CHOICE_TUYA_T5AI_DESKTOP_ROBOT)
+            rsource "./TUYA_T5AI_DESKTOP_ROBOT/Kconfig"
+        endif
+
 # <new-board-add: This line cannot be deleted or modified>
 
 endchoice
