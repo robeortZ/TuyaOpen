@@ -97,7 +97,7 @@ static OPERATE_RET __get_ui_font(UI_FONT_T *ui_font)
 
 #if (defined(BOARD_CHOICE_TUYA_T5AI_BOARD) || defined(BOARD_CHOICE_TUYA_T5AI_EVB) ||                                   \
      defined(BOARD_CHOICE_T5AI_MOJI_1_28) || defined(BOARD_CHOICE_T5AI_MINI) || defined(BOARD_CHOICE_DNESP32S3_BOX) || \
-     defined(BOARD_CHOICE_DNESP32S3_BOX2_WIFI))
+     defined(BOARD_CHOICE_DNESP32S3_BOX2_WIFI) || defined(BOARD_CHOICE_TUYA_T5AI_CORE))
 #if defined(ENABLE_GUI_WECHAT)
     ui_font->text = (lv_font_t *)&font_puhui_18_2;
     ui_font->icon = (lv_font_t *)&font_awesome_16_4;
@@ -214,6 +214,9 @@ static void __app_display_msg_handle(DISPLAY_MSG_T *msg_data)
     } break;
     case TY_DISPLAY_TP_CHAT_MODE: {
         ui_set_chat_mode(msg_data->data);
+    } break;
+    case TY_DISPLAY_TP_TEMP_HUMI: {
+        ui_set_temp_humi((float *)msg_data->data);
     } break;
     default: {
         PR_ERR("Invalid display type: %d", msg_data->type);

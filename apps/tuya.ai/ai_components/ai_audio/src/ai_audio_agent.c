@@ -167,8 +167,14 @@ static OPERATE_RET _parse_nlg(cJSON *json, uint8_t eof)
 
     if (AI_AGENT_CHAT_STREAM_DATA == sg_ai.stream_status) {
         ai_msg.type = (eof ? AI_AGENT_MSG_TP_TEXT_NLG_STOP : AI_AGENT_MSG_TP_TEXT_NLG_DATA);
-        ai_msg.data_len = strlen(content);
-        ai_msg.data = (uint8_t *)content;
+        // If we have image, skip text content to prevent AI from reading URL
+        if (content != NULL) {
+            ai_msg.data_len = strlen(content);
+            ai_msg.data = (uint8_t *)content;
+        } else {
+            ai_msg.data_len = 0;
+            ai_msg.data = NULL;
+        }
 
         if (sg_ai.cbs.ai_agent_msg_cb) {
             sg_ai.cbs.ai_agent_msg_cb(&ai_msg);

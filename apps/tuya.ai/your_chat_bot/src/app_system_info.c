@@ -30,6 +30,8 @@ typedef enum {
     DISPLAY_STATUS_TIME,
 } SI_DISPLAY_STATUS_E;
 
+TIMER_ID epd_time_update_tm;
+
 /***********************************************************
 ***********************typedef define***********************
 ***********************************************************/
@@ -48,7 +50,7 @@ typedef struct {
 /***********************************************************
 ********************function declaration********************
 ***********************************************************/
-
+// static  void __app_display_status_time_update(TIMER_ID timer_id,  void *arg);
 /***********************************************************
 ***********************variable define**********************
 ***********************************************************/
@@ -96,22 +98,27 @@ static void __app_display_net_status_update(void)
     }
 }
 
-static __attribute__((unused)) void __app_display_status_time_update(uint8_t force_update)
-{
-    POSIX_TM_S tm = {0};
-    tal_time_get_local_time_custom(0, &tm);
+// static  void __app_display_status_time_update(TIMER_ID timer_id,  void *arg)
+// {
+//     POSIX_TM_S tm = {0};
+//     tal_time_get_local_time_custom(0, &tm);
+//     uint8_t force_update = *(uint8_t *)arg;
+//     char tm_str[10] = {0};
 
-    if (tm.tm_hour != system_info.hour || tm.tm_min != system_info.min || force_update) {
-        system_info.hour = tm.tm_hour;
-        system_info.min = tm.tm_min;
+//     if (tm.tm_hour != system_info.hour || tm.tm_min != system_info.min || force_update) {
+//         system_info.hour = tm.tm_hour;
+//         system_info.min = tm.tm_min;
 
-        char tm_str[10] = {0};
-        snprintf(tm_str, sizeof(tm_str), "%02d:%02d", system_info.hour, system_info.min);
-#if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
-        app_display_send_msg(TY_DISPLAY_TP_STATUS, (uint8_t *)tm_str, strlen(tm_str));
-#endif
-    }
-}
+        
+//         snprintf(tm_str, sizeof(tm_str), "%02d:%02d", system_info.hour, system_info.min);
+//         // extern void EPD_7in5_show_time(char *time_str);
+//         //  EPD_7in5_show_time(tm_str);
+// #if defined(ENABLE_CHAT_DISPLAY) && (ENABLE_CHAT_DISPLAY == 1)
+//         app_display_send_msg(TY_DISPLAY_TP_STATUS, (uint8_t *)tm_str, strlen(tm_str));
+// #endif
+//     }
+//     PR_DEBUG("---------------time_update time:%s-----------------\r\n", tm_str);
+// }
 
 static void __app_display_status_tm_cb(TIMER_ID timer_id, void *arg)
 {
@@ -123,6 +130,7 @@ static void __app_display_status_tm_cb(TIMER_ID timer_id, void *arg)
         net_status_cnt = 0;
     }
     net_status_cnt++;
+
 }
 
 void app_system_info(void)
@@ -133,6 +141,7 @@ void app_system_info(void)
 
     // display status update
     tal_sw_timer_create(__app_display_status_tm_cb, NULL, &system_info.display_status_tm);
+
 
     // Set the initial network status
     system_info.last_net_status = UI_WIFI_STATUS_DISCONNECTED;
@@ -147,4 +156,5 @@ void app_system_info(void)
 #endif
 
     tal_sw_timer_start(system_info.display_status_tm, DISPLAY_STATUS_TM, TAL_TIMER_CYCLE);
+    
 }

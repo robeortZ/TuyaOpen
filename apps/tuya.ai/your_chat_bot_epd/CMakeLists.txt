@@ -20,7 +20,16 @@ list(APPEND APP_SRCS ${media_srcs})
 aux_source_directory(${APP_PATH}/src/epdlib/Config EPDLIB_CONFIG_SRCS)
 aux_source_directory(${APP_PATH}/src/epdlib/e-Paper EPDLIB_EPAPER_SRCS)
 aux_source_directory(${APP_PATH}/src/epdlib/GUI EPDLIB_GUI_SRCS)
-aux_source_directory(${APP_PATH}/src/epdlib/Fonts EPDLIB_FONTS_SRCS)
+
+# Fonts: explicitly list only needed fonts (not using aux_source_directory)
+set(EPDLIB_FONTS_SRCS
+    ${APP_PATH}/src/epdlib/Fonts/font16.c
+    ${APP_PATH}/src/epdlib/Fonts/font20.c
+    ${APP_PATH}/src/epdlib/Fonts/font24.c
+    ${APP_PATH}/src/epdlib/Fonts/font48.c
+    ${APP_PATH}/src/epdlib/Fonts/font72.c
+    ${APP_PATH}/src/epdlib/Fonts/font12CN_subset.c
+)
 
 # Add epdlib source files to main project
 list(APPEND APP_SRCS ${EPDLIB_CONFIG_SRCS} ${EPDLIB_EPAPER_SRCS} ${EPDLIB_GUI_SRCS} ${EPDLIB_FONTS_SRCS})

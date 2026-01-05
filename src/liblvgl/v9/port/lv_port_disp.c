@@ -150,6 +150,10 @@ void lv_port_disp_init(char *device)
 void lv_port_disp_deinit(void)
 {
     lv_display_delete(lv_disp_get_default());
+    if(sg_rotate_buf) {
+        LV_MEM_CUSTOM_FREE(sg_rotate_buf);
+        sg_rotate_buf = NULL;
+    }
     disp_deinit();
 }
 

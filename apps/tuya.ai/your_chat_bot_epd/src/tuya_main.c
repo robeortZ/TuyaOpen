@@ -46,7 +46,7 @@
 #include "ai_audio.h"
 #include "reset_netcfg.h"
 #include "app_system_info.h"
-#include "aht20_example.h"
+
 #include "app_pwm.h"
 
 
@@ -282,12 +282,17 @@ static void __app_display_status_time_update(TIMER_ID timer_id, void *arg)
     static uint8_t min = 255;
     static uint8_t day = 255;
 
+    PR_DEBUG("Time check: current=%02d:%02d, saved=%02d:%02d\r\n", 
+             tm.tm_hour, tm.tm_min, hour, min);
+
     // 检查是否需要更新时间
     if (tm.tm_hour != hour || tm.tm_min != min) {
         hour = tm.tm_hour;
         min = tm.tm_min;
 
         snprintf(time_str, sizeof(time_str), "%02d:%02d", hour, min);
+        
+        PR_DEBUG("Time changed, updating EPD to %s\r\n", time_str);
         
         // 使用新的局部刷新接口更新时间
         extern void EPD_7in5_update_time(const char *time_str);

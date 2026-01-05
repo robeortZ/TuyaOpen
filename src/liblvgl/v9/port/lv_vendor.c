@@ -16,6 +16,7 @@ static TKL_MUTEX_HANDLE g_disp_mutex = NULL;
 static TKL_SEM_HANDLE lvgl_sem = NULL;
 static uint8_t lvgl_task_state = STATE_INIT;
 static bool lv_vendor_initialized = false;
+extern lv_indev_t *indev_touchpad;
 
 static uint32_t lv_tick_get_callback(void)
 {
@@ -60,6 +61,20 @@ void lv_vendor_init(void *device)
     lv_vendor_initialized = true;
 
     LV_LOG_INFO("%s complete\n", __func__);
+}
+
+void lv_vendor_deinit(void)
+{
+    lv_port_disp_deinit();
+    lv_vendor_initialized = false;
+    lv_indev_delete(indev_touchpad);
+    lv_deinit();
+    tkl_mutex_release(g_disp_mutex);
+    g_disp_mutex = NULL;
+    tkl_semaphore_release(lvgl_sem);
+    lvgl_sem = NULL;
+    g_disp_thread_handle = NULL;
+    lv_vendor_initialized = false;
 }
 
 static void lv_tast_entry(void *arg)

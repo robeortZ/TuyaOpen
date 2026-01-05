@@ -20,6 +20,7 @@ set(APP_INC
             ${APP_PATH}/assets
             ${APP_PATH}/include
             ${APP_PATH}/include/media
+
 )
 
 list(APPEND APP_INC "${APP_PATH}/assets")

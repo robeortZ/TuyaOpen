@@ -17,15 +17,20 @@
    +--------------------------------------------------+
    |        状态栏（日期 + WiFi 状态）                | 50px
    +--------------------------------------------------+
-   |                      |                           |
-   |       图片区域       |        时间显示           |
-   |       （左侧）       |        （右侧）           |
+   |                      |       TODO List区域       | 300px
+   |       图片区域       +--------------------------+
+   |       （左侧）       |    时间 + 天气区域        | 130px
    |       350x430        |        450x430            |
    |                      |                           |
    +----------------------+---------------------------+
    ```
 
-3. **AI 图片生成与显示**
+3. **TODO List 待办事项**
+   - 最多支持 6 条待办事项
+   - 支持添加、删除、标记完成
+   - 局部刷新高效更新
+
+4. **AI 图片生成与显示**
    - 解析 AI 回复中的图片 URL
    - 通过 HTTPS 下载 JPEG 图片
    - 自动缩放适应显示区域
@@ -78,6 +83,38 @@
 | `EPD_7in5_update_status(date_str, wifi)` | 局部刷新更新状态栏 |
 | `EPD_7in5_init_layout(date, time, wifi)` | 全屏刷新初始化完整布局 |
 | `EPD_7in5_display_downloaded_image(data, size)` | 显示下载的 JPEG 图片（带抖动处理） |
+
+### TODO List 函数
+
+| 函数 | 说明 |
+| --- | --- |
+| `EPD_7in5_add_todo(text, completed)` | 添加一条待办事项（completed: 0=未完成, 1=已完成） |
+| `EPD_7in5_remove_todo(index)` | 删除指定索引的待办事项（索引从 0 开始） |
+| `EPD_7in5_set_todo_completed(index, completed)` | 设置待办事项的完成状态 |
+| `EPD_7in5_clear_todo()` | 清空所有待办事项 |
+| `EPD_7in5_get_todo_count()` | 获取当前待办事项数量 |
+| `EPD_7in5_update_todo()` | 局部刷新更新 TODO 区域显示 |
+
+#### TODO 使用示例
+
+```c
+// 添加待办事项
+EPD_7in5_add_todo("Weekly Meeting 5pm", 0);  // 未完成
+EPD_7in5_add_todo("Exercise 1 hour", 1);     // 已完成
+
+// 标记第一条为已完成
+EPD_7in5_set_todo_completed(0, 1);
+
+// 删除第二条待办事项
+EPD_7in5_remove_todo(1);
+
+// 刷新显示
+EPD_7in5_update_todo();
+
+// 清空所有待办事项
+EPD_7in5_clear_todo();
+EPD_7in5_update_todo();
+```
 
 ### 刷新策略
 

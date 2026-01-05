@@ -46,9 +46,13 @@
 #include "ai_audio.h"
 #include "reset_netcfg.h"
 #include "app_system_info.h"
+#include "aht20_example.h"
+#include "app_pwm.h"
+
 
 /* Tuya device handle */
 tuya_iot_client_t ai_client;
+// static THREAD_HANDLE epd_app_thread_handle = NULL;
 
 #ifndef PROJECT_VERSION
 #define PROJECT_VERSION "1.0.0"
@@ -251,6 +255,7 @@ bool user_network_check(void)
     return status == NETMGR_LINK_DOWN ? false : true;
 }
 
+
 void user_main(void)
 {
     int ret = OPRT_OK;
@@ -338,7 +343,10 @@ void user_main(void)
     tkl_wifi_set_lp_mode(0, 0);
 
     reset_netconfig_check();
+    // aht20_test_start();
+    app_pwm_init();
 
+    
     for (;;) {
         /* Loop to receive packets, and handles client keepalive */
         tuya_iot_yield(&ai_client);
@@ -378,7 +386,7 @@ static void tuya_app_thread(void *arg)
 
 void tuya_app_main(void)
 {
-    THREAD_CFG_T thrd_param = {4096, 4, "tuya_app_main"};
+    THREAD_CFG_T thrd_param = {10*1024, 4, "tuya_app_main"};
     tal_thread_create_and_start(&ty_app_thread, NULL, NULL, tuya_app_thread, NULL, &thrd_param);
 }
 #endif

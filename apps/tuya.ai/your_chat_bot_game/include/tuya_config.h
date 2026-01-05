@@ -26,8 +26,8 @@
 #define TUYA_PRODUCT_ID "p320pepzvmm1ghse"
 #endif
 
-#define TUYA_OPENSDK_UUID    ""             // Please change the correct uuid
-#define TUYA_OPENSDK_AUTHKEY "" // Please change the correct authkey
+#define TUYA_OPENSDK_UUID    "uuiddaaa7527eb66ac95"             // Please change the correct uuid
+#define TUYA_OPENSDK_AUTHKEY "ZNAqIFaRslGVGfyG9N1CYDHq7jbMS0yv" // Please change the correct authkey
 
 /**
  * @brief PINCODE for AP provisioning

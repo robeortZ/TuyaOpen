@@ -605,7 +605,7 @@ parameter:
 void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char * pString, cFONT* font,
                         UWORD Color_Foreground, UWORD Color_Background)
 {
-    const char* p_text = pString;
+    const unsigned char* p_text = (const unsigned char*)pString;
     int x = Xstart, y = Ystart;
     int i, j,Num;
 
@@ -613,7 +613,7 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char * pString, cFONT
     while (*p_text != 0) {
         if(*p_text <= 0x7F) {  //ASCII < 126
             for(Num = 0; Num < font->size; Num++) {
-                if(*p_text== font->table[Num].index[0]) {
+                if(*p_text== (unsigned char)font->table[Num].index[0]) {
                     const char* ptr = &font->table[Num].matrix[0];
 
                     for (j = 0; j < font->Height; j++) {
@@ -647,9 +647,13 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char * pString, cFONT
             p_text += 1;
             /* Decrement the column position by 16 */
             x += font->ASCII_Width;
-        } else {        //Chinese
+        } else {        //Chinese (UTF-8: 3 bytes per character)
             for(Num = 0; Num < font->size; Num++) {
-                if((*p_text== font->table[Num].index[0]) && (*(p_text+1) == font->table[Num].index[1])) {
+                // UTF-8 中文字符需要比较3个字节 (使用unsigned char避免符号问题)
+                const unsigned char* idx = (const unsigned char*)font->table[Num].index;
+                if((p_text[0] == idx[0]) && 
+                   (p_text[1] == idx[1]) &&
+                   (p_text[2] == idx[2])) {
                     const char* ptr = &font->table[Num].matrix[0];
 
                     for (j = 0; j < font->Height; j++) {
@@ -679,8 +683,8 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char * pString, cFONT
                     break;
                 }
             }
-            /* Point on the next character */
-            p_text += 2;
+            /* Point on the next character (UTF-8: 3 bytes) */
+            p_text += 3;
             /* Decrement the column position by 16 */
             x += font->Width;
         }

@@ -24,6 +24,8 @@
 #include "ai_audio.h"
 #include "app_chat_bot.h"
 #include "media_src_zh.h"
+#include "app_pwm.h"
+
 /***********************************************************
 ************************macro define************************
 ***********************************************************/
@@ -301,6 +303,33 @@ uint8_t app_chat_bot_get_enable(void)
     return sg_chat_bot.is_enable;
 }
 
+#if defined(ENABLE_BUTTON_2) && (ENABLE_BUTTON_2 == 1)
+static void __button_function_cb(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc)
+{
+    static uint8_t brightness = 0;
+    switch (event) {
+    case TDL_BUTTON_PRESS_DOWN: {
+        PR_NOTICE("%s: single click", name);
+        // app_pwm_set_duty(100);
+    } break;
+    case TDL_BUTTON_LONG_PRESS_START: {
+        PR_NOTICE("%s: long press", name);
+    } break;
+    case TDL_BUTTON_PRESS_SINGLE_CLICK: {
+        PR_NOTICE("%s: single click", name);
+        app_pwm_set_duty(brightness*100);
+        brightness+=10 ;
+    } break;
+    case TDL_BUTTON_PRESS_DOUBLE_CLICK: {
+        PR_NOTICE("%s: double click", name);
+        // app_pwm_set_duty(0);
+    } break;
+    default:
+        break;
+    }
+}
+#endif
+
 #if defined(ENABLE_BUTTON) && (ENABLE_BUTTON == 1)
 static void __app_button_function_cb(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc)
 {
@@ -373,6 +402,12 @@ static OPERATE_RET __app_open_button(void)
     tdl_button_event_register(sg_button_hdl, TDL_BUTTON_PRESS_SINGLE_CLICK, __app_button_function_cb);
     tdl_button_event_register(sg_button_hdl, TDL_BUTTON_PRESS_DOUBLE_CLICK, __app_button_function_cb);
 
+    // TDL_BUTTON_HANDLE button_hdl_2 = NULL;
+
+    // TUYA_CALL_ERR_RETURN(tdl_button_create(BUTTON_NAME_2, &button_cfg, &button_hdl_2));
+
+    // tdl_button_event_register(button_hdl_2, TDL_BUTTON_PRESS_SINGLE_CLICK, __button_function_cb);
+    // tdl_button_event_register(button_hdl_2, TDL_BUTTON_PRESS_DOUBLE_CLICK, __button_function_cb);
     return rt;
 }
 #endif

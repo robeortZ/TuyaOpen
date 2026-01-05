@@ -1,3 +1,4 @@
+#include "epdlib/Fonts/fonts.h"
 #if 1
 #include "EPD_7in5_V2.h"
 #include "GUI_Paint.h"
@@ -17,14 +18,14 @@ extern const unsigned char gImage_7in5_V2_b[];
 extern const unsigned char gImage_7in5_V2_ry[];
 
 /*******************************************************************************
- * T形布局定义
+ * T形布局定义（重新设计）
  * 
  * +--------------------------------------------------+
  * |          状态栏（日期 + WiFi状态）               |  高度: 50px
  * +--------------------------------------------------+
- * |                      |                           |
- * |      图片区域        |       时间区域            |
- * |      (左侧)          |       (右侧)              |
+ * |                      |       TODO List区域       |  高度: 200px
+ * |      图片区域        +--------------------------+
+ * |      (左侧)          |    时间 + 天气区域        |  高度: 230px
  * |      350x430         |       450x430             |
  * |                      |                           |
  * +----------------------+---------------------------+
@@ -50,15 +51,25 @@ extern const unsigned char gImage_7in5_V2_ry[];
 #define IMAGE_AREA_WIDTH    DIVIDER_X           // 350
 #define IMAGE_AREA_HEIGHT   (SCREEN_HEIGHT - STATUS_BAR_HEIGHT)  // 430
 
-// 时间区域（右下）
-#define TIME_AREA_X         DIVIDER_X
-#define TIME_AREA_Y         STATUS_BAR_HEIGHT
-#define TIME_AREA_WIDTH     (SCREEN_WIDTH - DIVIDER_X)  // 450
-#define TIME_AREA_HEIGHT    (SCREEN_HEIGHT - STATUS_BAR_HEIGHT)  // 430
+// TODO List区域（右上，原天气区域）
+#define TODO_AREA_X         DIVIDER_X
+#define TODO_AREA_Y         STATUS_BAR_HEIGHT
+#define TODO_AREA_WIDTH     (SCREEN_WIDTH - DIVIDER_X)  // 450
+#define TODO_AREA_HEIGHT    300
 
-// 时间显示位置（在时间区域内居中）
-#define TIME_DISPLAY_X      (TIME_AREA_X + 50)
-#define TIME_DISPLAY_Y      (TIME_AREA_Y + 150)
+// 时间+天气区域（右下，合并显示）
+#define TIME_AREA_X         DIVIDER_X
+#define TIME_AREA_Y         (STATUS_BAR_HEIGHT + TODO_AREA_HEIGHT)  // 250
+#define TIME_AREA_WIDTH     (SCREEN_WIDTH - DIVIDER_X)  // 450
+#define TIME_AREA_HEIGHT    (SCREEN_HEIGHT - STATUS_BAR_HEIGHT - TODO_AREA_HEIGHT)  // 230
+
+// 时间显示位置（在时间区域内，左侧大字体）
+#define TIME_DISPLAY_X      (TIME_AREA_X + 20)
+#define TIME_DISPLAY_Y      (TIME_AREA_Y + 30)
+
+// 天气信息显示位置（在时间区域内，右侧小字体）
+#define WEATHER_INFO_X      (TIME_AREA_X + 280)
+#define WEATHER_INFO_Y      (TIME_AREA_Y + 20)
 
 // 日期显示位置（在状态栏内）
 #define DATE_DISPLAY_X      20
@@ -67,6 +78,10 @@ extern const unsigned char gImage_7in5_V2_ry[];
 // WiFi状态显示位置（在状态栏内，右侧）
 #define WIFI_DISPLAY_X      650
 #define WIFI_DISPLAY_Y      12
+
+// TODO List 最大条目数
+#define MAX_TODO_ITEMS      6
+#define TODO_ITEM_HEIGHT    28
 
 // 缓冲区
 static UBYTE *BlackImage_buf = NULL;
@@ -77,6 +92,34 @@ static UBYTE s_wifi_connected = 0;
 // 当前显示的时间（用于检测变化）
 static char s_current_time[16] = {0};
 static char s_current_date[32] = {0};
+
+// 天气信息结构体
+typedef struct {
+    int temperature;        // 温度 (摄氏度)
+    int humidity;           // 湿度 (%)
+    char wind_dir[16];      // 风向
+    int wind_level;         // 风力等级
+    char status[32];        // 天气状态 (晴/多云/阴/雨等)
+    char area[64];          // 地区信息
+} weather_info_t;
+
+static weather_info_t s_weather = {
+    .temperature = 0,
+    .humidity = 0,
+    .wind_dir = "--",
+    .wind_level = 0,
+    .status = "未知",
+    .area = "未知"
+};
+
+// TODO List 结构体
+typedef struct {
+    char text[48];          // TODO 内容
+    uint8_t completed;      // 是否完成 (0: 未完成, 1: 已完成)
+} todo_item_t;
+
+static todo_item_t s_todo_list[MAX_TODO_ITEMS] = {0};
+static uint8_t s_todo_count = 0;
 
 
 /*******************************************************************************
@@ -116,7 +159,7 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     if (wifi_connected) {
         Paint_DrawString_EN(WIFI_DISPLAY_X, DATE_DISPLAY_Y, "WiFi:ON", &Font24, BLACK, WHITE);
     } else {
-        Paint_DrawString_EN(WIFI_DISPLAY_X, DATE_DISPLAY_Y, "WiFi:--", &Font24, BLACK, WHITE);
+        Paint_DrawString_EN(WIFI_DISPLAY_X, DATE_DISPLAY_Y, "WiFi:xx", &Font24, BLACK, WHITE);
     }
 
     // ========== 绘制分隔线 ==========
@@ -124,6 +167,8 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     Paint_DrawLine(0, DIVIDER_Y, SCREEN_WIDTH, DIVIDER_Y, BLACK, DOT_PIXEL_2X2, LINE_STYLE_SOLID);
     // 垂直分隔线（左右分隔）
     Paint_DrawLine(DIVIDER_X, DIVIDER_Y, DIVIDER_X, SCREEN_HEIGHT, BLACK, DOT_PIXEL_2X2, LINE_STYLE_SOLID);
+    // 水平分隔线（TODO区域与时间区域之间）
+    Paint_DrawLine(DIVIDER_X, TIME_AREA_Y, SCREEN_WIDTH, TIME_AREA_Y, BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
 
     // ========== 绘制左侧图片区域 ==========
     // 绘制示例图案（可替换为实际图片）
@@ -136,22 +181,60 @@ void EPD_7in5_init_layout(const char *date_str, const char *time_str, uint8_t wi
     Paint_DrawCircle(img_center_x, img_center_y, 40, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
     Paint_DrawString_EN(img_center_x - 50, img_center_y + 100, "Tuya AI", &Font24, WHITE, BLACK);
 
-    // ========== 绘制右侧时间区域 ==========
-    // 时间区域标题
-    Paint_DrawString_EN(TIME_AREA_X + 20, TIME_AREA_Y + 20, "Current Time", &Font24, WHITE, BLACK);
-    
-    // 绘制时间（大字体）
+    // ========== 绘制右上TODO List区域 ==========
+    Paint_DrawString_EN(TODO_AREA_X + 20, TODO_AREA_Y + 10, "TODO List", &Font24, WHITE, BLACK);
+    // 绘制空的TODO列表提示
+    if (s_todo_count == 0) {
+        Paint_DrawString_EN(TODO_AREA_X + 40, TODO_AREA_Y + 60, "No tasks yet", &Font20, WHITE, BLACK);
+        Paint_DrawString_EN(TODO_AREA_X + 40, TODO_AREA_Y + 90, "Ask AI to add tasks", &Font16, WHITE, BLACK);
+    } else {
+        // 绘制TODO列表项
+        for (int i = 0; i < s_todo_count && i < MAX_TODO_ITEMS; i++) {
+            UWORD item_y = TODO_AREA_Y + 45 + i * TODO_ITEM_HEIGHT;
+            // 绘制复选框
+            if (s_todo_list[i].completed) {
+                Paint_DrawRectangle(TODO_AREA_X + 20, item_y, TODO_AREA_X + 36, item_y + 16, 
+                                    BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            } else {
+                Paint_DrawRectangle(TODO_AREA_X + 20, item_y, TODO_AREA_X + 36, item_y + 16, 
+                                    BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+            }
+            // 绘制TODO文本
+            Paint_DrawString_EN(TODO_AREA_X + 45, item_y, s_todo_list[i].text, &Font16, WHITE, BLACK);
+        }
+    }
+
+    // ========== 绘制右下时间+天气区域 ==========
+    // 绘制时间（大字体，左侧）
     if (time_str != NULL) {
         Paint_DrawString_EN(TIME_DISPLAY_X, TIME_DISPLAY_Y, time_str, &Font72, WHITE, BLACK);
         strncpy(s_current_time, time_str, sizeof(s_current_time) - 1);
     }
     
-    // 绘制装饰线
-    Paint_DrawLine(TIME_AREA_X + 20, TIME_DISPLAY_Y - 20, 
-                   TIME_AREA_X + TIME_AREA_WIDTH - 20, TIME_DISPLAY_Y - 20, 
-                   BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-    Paint_DrawLine(TIME_AREA_X + 20, TIME_DISPLAY_Y + 90, 
-                   TIME_AREA_X + TIME_AREA_WIDTH - 20, TIME_DISPLAY_Y + 90, 
+    // 绘制天气信息（小字体，右侧）
+    // 第一行：温度 + 湿度
+    char weather_line1[32];
+    sprintf(weather_line1, "T:%dC H:%d%%", s_weather.temperature, s_weather.humidity);
+    Paint_DrawString_EN(WEATHER_INFO_X, WEATHER_INFO_Y, weather_line1, &Font20, WHITE, BLACK);
+    
+    // 第二行：风力
+    char weather_line2[32];
+    sprintf(weather_line2, "Wind: Lv%d", s_weather.wind_level);
+    Paint_DrawString_EN(WEATHER_INFO_X, WEATHER_INFO_Y + 28, weather_line2, &Font20, WHITE, BLACK);
+    
+    // 第三行：位置（中文）- 格式: "位置: 西湖区"
+    char weather_line3[80];
+    sprintf(weather_line3, "位置: %s", s_weather.area);
+    Paint_DrawString_CN(WEATHER_INFO_X, WEATHER_INFO_Y + 52, weather_line3, &Font12CN_Subset, BLACK, WHITE);
+    
+    // 第四行：天气状态（中文）- 格式: "天气: 多云"
+    char weather_line4[80];
+    sprintf(weather_line4, "天气: %s", s_weather.status);
+    Paint_DrawString_CN(WEATHER_INFO_X, WEATHER_INFO_Y + 72, weather_line4, &Font12CN_Subset, BLACK, WHITE);
+    
+    // 垂直分隔线（时间和天气之间）
+    Paint_DrawLine(WEATHER_INFO_X - 15, TIME_AREA_Y + 10, 
+                   WEATHER_INFO_X - 15, TIME_AREA_Y + TIME_AREA_HEIGHT - 10, 
                    BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
 
     // 显示整个画面
@@ -288,6 +371,210 @@ void EPD_7in5_update_image(const UBYTE *image_data)
 }
 
 /*******************************************************************************
+ * 设置天气信息（供外部调用）
+ ******************************************************************************/
+void EPD_7in5_set_weather(int temp, int humidity, const char *wind_dir, 
+                           int wind_level, const char *status, const char *area)
+{
+    s_weather.temperature = temp;
+    s_weather.humidity = humidity;
+    if (wind_dir) {
+        strncpy(s_weather.wind_dir, wind_dir, sizeof(s_weather.wind_dir) - 1);
+    }
+    s_weather.wind_level = wind_level;
+    if (status) {
+        strncpy(s_weather.status, status, sizeof(s_weather.status) - 1);
+    }
+    if (area) {
+        strncpy(s_weather.area, area, sizeof(s_weather.area) - 1);
+    }
+    PR_DEBUG("Weather set: %s, %dC, %d%%, %s Lv%d, %s\r\n", 
+             area, temp, humidity, wind_dir, wind_level, status);
+}
+
+/*******************************************************************************
+ * 局部刷新天气信息（在时间区域右侧）
+ ******************************************************************************/
+void EPD_7in5_update_weather(void)
+{
+    // 天气信息显示在时间区域右侧，只刷新天气部分
+    UWORD weather_width = TIME_AREA_WIDTH - (WEATHER_INFO_X - TIME_AREA_X);  // 约170
+    UWORD weather_height = 100;  // 增加高度以容纳4行
+    
+    UDOUBLE Imagesize = ((weather_width % 8 == 0) ? (weather_width / 8) : (weather_width / 8 + 1)) * weather_height;
+    
+    if ((PartialImage_buf = (UBYTE *)tkl_system_psram_malloc(Imagesize)) == NULL) {
+        PR_DEBUG("Failed to apply for weather area memory...\r\n");
+        return;
+    }
+
+    // 初始化局部刷新模式
+    EPD_7IN5_V2_Init_Part();
+
+    // 创建天气图像（使用相对坐标）
+    Paint_NewImage(PartialImage_buf, weather_width, weather_height, 0, WHITE);
+    Paint_SelectImage(PartialImage_buf);
+    Paint_Clear(WHITE);
+
+    // 第一行：温度 + 湿度
+    char weather_line1[32];
+    sprintf(weather_line1, "T:%dC H:%d%%", s_weather.temperature, s_weather.humidity);
+    Paint_DrawString_EN(0, 0, weather_line1, &Font20, WHITE, BLACK);
+    
+    // 第二行：风力
+    char weather_line2[32];
+    sprintf(weather_line2, "Wind: Lv%d", s_weather.wind_level);
+    Paint_DrawString_EN(0, 28, weather_line2, &Font20, WHITE, BLACK);
+    
+    // 第三行：位置（中文）- 格式: "位置: 西湖区"
+    char weather_line3[80];
+    sprintf(weather_line3, "位置: %s", s_weather.area);
+    Paint_DrawString_CN(0, 52, weather_line3, &Font12CN_Subset, BLACK, WHITE);
+    
+    // 第四行：天气状态（中文）- 格式: "天气: 多云"
+    char weather_line4[80];
+    sprintf(weather_line4, "天气: %s", s_weather.status);
+    Paint_DrawString_CN(0, 72, weather_line4, &Font12CN_Subset, BLACK, WHITE);
+
+    // 局部刷新天气区域
+    EPD_7IN5_V2_Display_Part(PartialImage_buf, WEATHER_INFO_X, WEATHER_INFO_Y, 
+                              WEATHER_INFO_X + weather_width, WEATHER_INFO_Y + weather_height);
+
+    // 释放缓冲区
+    tkl_system_psram_free(PartialImage_buf);
+    PartialImage_buf = NULL;
+
+    PR_DEBUG("Weather info updated\r\n");
+}
+
+/*******************************************************************************
+ * 添加TODO项
+ ******************************************************************************/
+void EPD_7in5_add_todo(const char *text, uint8_t completed)
+{
+    if (s_todo_count >= MAX_TODO_ITEMS) {
+        PR_DEBUG("TODO list is full\r\n");
+        return;
+    }
+    
+    strncpy(s_todo_list[s_todo_count].text, text, sizeof(s_todo_list[0].text) - 1);
+    s_todo_list[s_todo_count].completed = completed;
+    s_todo_count++;
+    
+    PR_DEBUG("TODO added: %s (count=%d)\r\n", text, s_todo_count);
+}
+
+/*******************************************************************************
+ * 清空TODO列表
+ ******************************************************************************/
+void EPD_7in5_clear_todo(void)
+{
+    memset(s_todo_list, 0, sizeof(s_todo_list));
+    s_todo_count = 0;
+    PR_DEBUG("TODO list cleared\r\n");
+}
+
+/*******************************************************************************
+ * 设置TODO项完成状态
+ ******************************************************************************/
+void EPD_7in5_set_todo_completed(uint8_t index, uint8_t completed)
+{
+    if (index < s_todo_count) {
+        s_todo_list[index].completed = completed;
+        PR_DEBUG("TODO %d completed=%d\r\n", index, completed);
+    }
+}
+
+/*******************************************************************************
+ * 删除单条TODO项
+ ******************************************************************************/
+void EPD_7in5_remove_todo(uint8_t index)
+{
+    if (index >= s_todo_count) {
+        PR_DEBUG("Invalid TODO index: %d (count=%d)\r\n", index, s_todo_count);
+        return;
+    }
+    
+    PR_DEBUG("Removing TODO %d: %s\r\n", index, s_todo_list[index].text);
+    
+    // 将后面的项向前移动
+    for (int i = index; i < s_todo_count - 1; i++) {
+        memcpy(&s_todo_list[i], &s_todo_list[i + 1], sizeof(todo_item_t));
+    }
+    
+    // 清空最后一项
+    memset(&s_todo_list[s_todo_count - 1], 0, sizeof(todo_item_t));
+    s_todo_count--;
+    
+    PR_DEBUG("TODO removed, count=%d\r\n", s_todo_count);
+}
+
+/*******************************************************************************
+ * 获取TODO数量
+ ******************************************************************************/
+uint8_t EPD_7in5_get_todo_count(void)
+{
+    return s_todo_count;
+}
+
+/*******************************************************************************
+ * 局部刷新TODO List区域
+ ******************************************************************************/
+void EPD_7in5_update_todo(void)
+{
+    UWORD todo_width = TODO_AREA_WIDTH;
+    UWORD todo_height = TODO_AREA_HEIGHT;
+    
+    UDOUBLE Imagesize = ((todo_width % 8 == 0) ? (todo_width / 8) : (todo_width / 8 + 1)) * todo_height;
+    
+    if ((PartialImage_buf = (UBYTE *)tkl_system_psram_malloc(Imagesize)) == NULL) {
+        PR_DEBUG("Failed to apply for TODO area memory...\r\n");
+        return;
+    }
+
+    // 初始化局部刷新模式
+    EPD_7IN5_V2_Init_Part();
+
+    // 创建TODO区域图像
+    Paint_NewImage(PartialImage_buf, todo_width, todo_height, 0, WHITE);
+    Paint_SelectImage(PartialImage_buf);
+    Paint_Clear(WHITE);
+
+    // 标题
+    Paint_DrawString_EN(20, 10, "TODO List", &Font24, WHITE, BLACK);
+    
+    // 绘制TODO列表
+    if (s_todo_count == 0) {
+        Paint_DrawString_EN(40, 60, "No tasks yet", &Font20, WHITE, BLACK);
+        Paint_DrawString_EN(40, 90, "Ask AI to add tasks", &Font16, WHITE, BLACK);
+    } else {
+        for (int i = 0; i < s_todo_count && i < MAX_TODO_ITEMS; i++) {
+            UWORD item_y = 45 + i * TODO_ITEM_HEIGHT;
+            // 复选框
+            if (s_todo_list[i].completed) {
+                Paint_DrawRectangle(20, item_y, 36, item_y + 16, 
+                                    BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            } else {
+                Paint_DrawRectangle(20, item_y, 36, item_y + 16, 
+                                    BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+            }
+            // TODO文本
+            Paint_DrawString_EN(45, item_y, s_todo_list[i].text, &Font16, WHITE, BLACK);
+        }
+    }
+
+    // 局部刷新TODO区域
+    EPD_7IN5_V2_Display_Part(PartialImage_buf, TODO_AREA_X, TODO_AREA_Y, 
+                              TODO_AREA_X + todo_width, TODO_AREA_Y + todo_height);
+
+    // 释放缓冲区
+    tkl_system_psram_free(PartialImage_buf);
+    PartialImage_buf = NULL;
+
+    PR_DEBUG("TODO area updated\r\n");
+}
+
+/*******************************************************************************
  * 兼容旧接口：显示时间
  ******************************************************************************/
 void EPD_7in5_show_time(char *time_str)
@@ -314,6 +601,12 @@ OPERATE_RET EPD_7in5_V2_init(void)
     EPD_7IN5_V2_Clear();
     DEV_Delay_ms(500);
 
+    // 添加示例 TODO 项
+    EPD_7in5_add_todo("Fri 5pm Weekly Meeting", 0);
+    EPD_7in5_add_todo("Exercise 1 hour", 0);
+    EPD_7in5_add_todo("EPD add Todo feature", 1);  // 已完成
+    EPD_7in5_add_todo("Play phone 1 hour", 0);
+
     // 初始化T形布局（日期、时间、WiFi状态）
     // 这里使用默认值，实际使用时应该传入真实的日期时间
     EPD_7in5_init_layout("2024-12-18 Wed", "15:30", 1);
@@ -338,7 +631,7 @@ void EPD_7in5_minute_refresh(UBYTE hour, UBYTE min)
 }
 
 /*******************************************************************************
- * 刷新完整状态（日期、时间、WiFi）
+ * 刷新完整状态（日期、时间、WiFi、天气、TODO）
  ******************************************************************************/
 void EPD_7in5_refresh_all(const char *date_str, const char *time_str, uint8_t wifi_connected)
 {
@@ -348,7 +641,9 @@ void EPD_7in5_refresh_all(const char *date_str, const char *time_str, uint8_t wi
     } else {
         // 分别更新各区域
         EPD_7in5_update_status(date_str, wifi_connected);
+        EPD_7in5_update_todo();
         EPD_7in5_update_time(time_str);
+        EPD_7in5_update_weather();
     }
 }
 
@@ -379,7 +674,7 @@ OPERATE_RET EPD_7in5_V2_test(void)
     PR_DEBUG("Paint_NewImage\r\n");
     Paint_NewImage(BlackImage, EPD_7IN5_V2_WIDTH, EPD_7IN5_V2_HEIGHT, 0, WHITE);     
 
-#if 1   // show image for array   
+#if 0   // show image for array   
     EPD_7IN5_V2_Init_Fast();
     PR_DEBUG("show image for array\r\n");
     Paint_SelectImage(BlackImage);
@@ -389,7 +684,7 @@ OPERATE_RET EPD_7in5_V2_test(void)
     DEV_Delay_ms(2000);
 #endif
 
-#if 1  // Drawing on the image
+#if 0  // Drawing on the image
     //1.Select Image
     EPD_7IN5_V2_Init();
     PR_DEBUG("SelectImage:BlackImage\r\n");
@@ -421,7 +716,7 @@ OPERATE_RET EPD_7in5_V2_test(void)
     DEV_Delay_ms(2000);
 #endif
 
-#if 1   //Partial refresh, example shows time
+#if 0   //Partial refresh, example shows time
     EPD_7IN5_V2_Init_Part();
 	Paint_NewImage(BlackImage, Font24.Width * 7, Font24.Height, 0, WHITE);
     Debug("Partial refresh\r\n");

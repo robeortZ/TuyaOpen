@@ -13,7 +13,7 @@
  */
 
 #include "tuya_cloud_types.h"
-
+#include "tal_log.h"
 #if defined(ENABLE_GUI_CHATBOT) && (ENABLE_GUI_CHATBOT == 1)
 
 #include "ui_display.h"
@@ -52,6 +52,7 @@ typedef struct {
     lv_obj_t *notification_label;
     lv_obj_t *mute_label;
     lv_obj_t *chat_mode_label;
+    lv_obj_t *temp_humi_label;
 } APP_UI_T;
 
 typedef struct {
@@ -195,6 +196,22 @@ int ui_init(UI_FONT_T *ui_font)
     lv_label_set_text(sg_ui.ui.chat_mode_label, "");
     lv_obj_align(sg_ui.ui.chat_mode_label, LV_ALIGN_LEFT_MID, 5, 0);
 
+    // Temp humi
+    sg_ui.ui.temp_humi_label = lv_label_create(sg_ui.ui.content);
+    lv_obj_set_style_text_color(sg_ui.ui.temp_humi_label, sg_ui.theme.text, 0);
+    lv_label_set_text(sg_ui.ui.temp_humi_label, "");
+    lv_obj_align(sg_ui.ui.temp_humi_label, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_add_flag(sg_ui.ui.temp_humi_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(sg_ui.ui.temp_humi_label, LV_OBJ_FLAG_HIDDEN);
+    // 设置标签的背景颜色为蓝色
+    lv_obj_set_style_bg_color(sg_ui.ui.temp_humi_label, lv_color_hex(0x7CFC00), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sg_ui.ui.temp_humi_label, LV_OPA_COVER, LV_PART_MAIN); // 设置不透明度（完全不透明）
+    // if (NULL == sg_ui.temp_humi_tm) {
+    //     sg_ui.temp_humi_tm = lv_timer_create(__ui_temp_humi_timeout_cb, 3000, NULL);
+    // } else {
+    //     lv_timer_reset(sg_ui.temp_humi_tm);
+    // }
+
     // Notification label
     sg_ui.ui.notification_label = lv_label_create(sg_ui.ui.status_bar);
     lv_obj_set_flex_grow(sg_ui.ui.notification_label, 1);
@@ -316,6 +333,18 @@ void ui_set_chat_mode(const char *chat_mode)
     }
 
     lv_label_set_text(sg_ui.ui.chat_mode_label, chat_mode);
+}
+void ui_set_temp_humi(const float *temp_humi)
+{
+    if (sg_ui.ui.temp_humi_label == NULL || NULL == temp_humi) {
+        return;
+    }
+
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "温度：%.1f℃ 湿度：%.1f%%", temp_humi[0], temp_humi[1]);
+    lv_label_set_text(sg_ui.ui.temp_humi_label, buffer);
+    // lv_label_set_text_fmt(sg_ui.ui.temp_humi_label, "温度：%.2f℃, 湿度：%.2f%%", temp_humi[0], temp_humi[1]);
+    PR_INFO("温度：%.2f℃, 湿度：%.2f%%", temp_humi[0], temp_humi[1]);
 }
 
 void ui_set_status_bar_pad(int32_t value)
