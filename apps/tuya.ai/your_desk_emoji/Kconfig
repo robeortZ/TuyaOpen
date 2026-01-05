@@ -40,6 +40,10 @@ if(ENABLE_CHAT_MODE_ASR_WAKEUP_SINGEL || ENABLE_CHAT_MODE_ASR_WAKEUP_FREE)
     endchoice
 endif
 
+config ENABLE_AUDIO_CHAT
+    bool "enable audio chat mode"
+    default y
+
 config ENABLE_CHAT_DISPLAY
     bool "enable the display module"
     default n

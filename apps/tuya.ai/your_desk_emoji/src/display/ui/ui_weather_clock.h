@@ -13,6 +13,7 @@
 #ifndef __UI_WEATHER_CLOCK_H__
 #define __UI_WEATHER_CLOCK_H__
 
+#include <time.h>
 #include "tuya_cloud_types.h"
 #include "lvgl.h"
 #include "app_display.h"

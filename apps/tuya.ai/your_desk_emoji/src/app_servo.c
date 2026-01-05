@@ -427,7 +427,7 @@ OPERATE_RET app_servo_init(VOID)
     // Initialize horizontal PWM
     TUYA_CALL_ERR_RETURN(tkl_pwm_init(SERVO_PWM_HORIZONTAL, &cfg_x));
     TUYA_CALL_ERR_RETURN(tkl_pwm_start(SERVO_PWM_HORIZONTAL));
-
+    PR_DEBUG("Servo initialized on channel horizontal %d with frequency %dHz", SERVO_PWM_HORIZONTAL, SERVO_PWM_FREQ);
     // Initialize vertical PWM
     TUYA_CALL_ERR_RETURN(tkl_pwm_init(SERVO_PWM_VERTICAL, &cfg_y));
     TUYA_CALL_ERR_RETURN(tkl_pwm_start(SERVO_PWM_VERTICAL));
