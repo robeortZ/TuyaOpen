@@ -17,99 +17,129 @@
  *
  */
 
-#include "tuya_cloud_types.h"
+ #include "tuya_cloud_types.h"
 
-#include "tal_api.h"
-#include "tkl_output.h"
-#include "tkl_spi.h"
-#include "tkl_system.h"
-
-#include "lvgl.h"
-#include "lv_vendor.h"
-#include "board_com_api.h"
-
-/***********************************************************
-*************************micro define***********************
-***********************************************************/
-
-/***********************************************************
-***********************typedef define***********************
-***********************************************************/
-
-/***********************************************************
-***********************variable define**********************
-***********************************************************/
-
-
-/***********************************************************
-***********************function define**********************
-***********************************************************/
-/**
- * @brief user_main
- *
- * @param[in] param:Task parameters
- * @return none
- */
-void user_main(void)
-{
-    /* basic init */
-    tal_log_init(TAL_LOG_LEVEL_DEBUG, 4096, (TAL_LOG_OUTPUT_CB)tkl_log_output);
-
-    /*hardware register*/
-    board_register_hardware();
-
-    lv_vendor_init(DISPLAY_NAME);
-
-    LV_IMG_DECLARE(tuya_gif2);
-    lv_obj_t * img;
-
-    img = lv_gif_create(lv_scr_act());
-    lv_gif_set_src(img, &tuya_gif2);
-    lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
-
-    lv_vendor_start(5, 1024*8);
-}
-
-/**
- * @brief main
- *
- * @param argc
- * @param argv
- * @return void
- */
-#if OPERATING_SYSTEM == SYSTEM_LINUX
-void main(int argc, char *argv[])
-{
-    user_main();
-
-    while (1) {
-        tal_system_sleep(500);
-    }
-}
-#else
-
-/* Tuya thread handle */
-static THREAD_HANDLE ty_app_thread = NULL;
-
-/**
- * @brief  task thread
- *
- * @param[in] arg:Parameters when creating a task
- * @return none
- */
-static void tuya_app_thread(void *arg)
-{
-    (void) arg;
-
-    user_main();
-
-    tal_thread_delete(ty_app_thread);
-    ty_app_thread = NULL;
-}
-
-void tuya_app_main(void)
-{
-    THREAD_CFG_T thrd_param = {1024 * 4, 4, "tuya_app_main"};
-    tal_thread_create_and_start(&ty_app_thread, NULL, NULL, tuya_app_thread, NULL, &thrd_param);
-}
-#endif
+ #include "tal_api.h"
+ #include "tkl_output.h"
+ #include "tkl_spi.h"
+ #include "tkl_system.h"
+ 
+ #include "lvgl.h"
+ #include "lv_vendor.h"
+ #include "board_com_api.h"
+ #include "tkl_fs.h"
+ /***********************************************************
+ *************************micro define***********************
+ ***********************************************************/
+ 
+ #define FILE_PATH_GIF "/t5_fs/picture/xuexi.gif" //The file path where the images are stored on the SD card.
+ #define SDCARD_MOUNT_PATH "/" //Mount to the root directory.
+ 
+ /***********************************************************
+ ***********************typedef define***********************
+ ***********************************************************/
+ 
+ /***********************************************************
+ ***********************variable define**********************
+ ***********************************************************/
+ 
+ 
+ /***********************************************************
+ ***********************function define**********************
+ ***********************************************************/
+ static lv_img_dsc_t gif_file_dsc; 
+ 
+ extern OPERATE_RET gui_img_load_psram(CHAR_T *filename, lv_img_dsc_t *img_dst);
+ extern OPERATE_RET gui_img_unload_psram(lv_img_dsc_t *img_dsc);
+ /**
+  * @brief user_main
+  *
+  * @param[in] param:Task parameters
+  * @return none
+  */
+ void user_main(void)
+ {
+     OPERATE_RET rt = OPRT_OK;
+     /* basic init */
+     tal_log_init(TAL_LOG_LEVEL_DEBUG, 4096, (TAL_LOG_OUTPUT_CB)tkl_log_output);
+ 
+     /*hardware register*/
+     board_register_hardware();
+ 
+     TUYA_CALL_ERR_LOG(tkl_fs_mount(SDCARD_MOUNT_PATH, DEV_SDCARD));
+     if (rt != OPRT_OK) {
+         PR_ERR("Mount SD card failed: %d", rt);
+         while (1) {
+             TUYA_CALL_ERR_LOG(tkl_fs_mount(SDCARD_MOUNT_PATH, DEV_SDCARD));
+             tal_system_sleep(3 * 1000);
+         }
+ 
+     }
+     PR_DEBUG("Mount SD card success!");
+     PR_DEBUG("Initialize LVGL");
+     lv_vendor_init(DISPLAY_NAME);
+ 
+     
+     lv_obj_t * img;
+ 
+     img = lv_gif_create(lv_scr_act());
+ #if 0 //Load images from c array
+     LV_IMG_DECLARE(tuya_gif2);
+     lv_gif_set_src(img, &tuya_gif2);
+     lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+ #endif
+ 
+     gui_img_load_psram(FILE_PATH_GIF, &gif_file_dsc);
+     lv_gif_set_src(img, &gif_file_dsc);
+     lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+     // gui_img_unload_psram(&gif_file_dsc);
+ 
+ 
+     lv_vendor_start(5, 1024*8);
+ }
+ 
+ 
+ 
+ /**
+  * @brief main
+  *
+  * @param argc
+  * @param argv
+  * @return void
+  */
+ #if OPERATING_SYSTEM == SYSTEM_LINUX
+ void main(int argc, char *argv[])
+ {
+     user_main();
+ 
+     while (1) {
+         tal_system_sleep(500);
+     }
+ }
+ #else
+ 
+ /* Tuya thread handle */
+ static THREAD_HANDLE ty_app_thread = NULL;
+ 
+ /**
+  * @brief  task thread
+  *
+  * @param[in] arg:Parameters when creating a task
+  * @return none
+  */
+ static void tuya_app_thread(void *arg)
+ {
+     (void) arg;
+ 
+     user_main();
+ 
+     tal_thread_delete(ty_app_thread);
+     ty_app_thread = NULL;
+ }
+ 
+ void tuya_app_main(void)
+ {
+     THREAD_CFG_T thrd_param = {1024 * 4, 4, "tuya_app_main",0};
+     tal_thread_create_and_start(&ty_app_thread, NULL, NULL, tuya_app_thread, NULL, &thrd_param);
+ }
+ #endif
