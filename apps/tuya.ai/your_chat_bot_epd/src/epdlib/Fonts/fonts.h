@@ -87,7 +87,8 @@ extern sFONT Font48;
 extern sFONT Font72;
 
 // extern cFONT Font48;
-extern cFONT Font24CN;
+extern cFONT Font12CN_Subset;  // Chinese font subset (73 chars for weather)
+// extern cFONT Font24CN;     // Not included to save space
 #ifdef __cplusplus
 }
 #endif

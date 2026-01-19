@@ -198,7 +198,7 @@ static int http_file_download_init(http_download_t *ctx, http_download_config_t 
     /* Set the buffer used for storing request headers. */
 
     HTTPRequestHeaders_t *requestHeaders = &ctx->requestHeaders;
-    requestHeaders->bufferLen = 512;
+    requestHeaders->bufferLen = 2048;  // Increased for long URLs with query parameters
     requestHeaders->pBuffer = tal_malloc(requestHeaders->bufferLen);
     TUYA_CHECK_NULL_RETURN(requestHeaders->pBuffer, OPRT_MALLOC_FAILED);
 
@@ -212,8 +212,9 @@ int http_file_download(http_download_config_t *config)
     http_download_t *ctx = tal_calloc(1, sizeof(http_download_t));
     TUYA_CHECK_NULL_GOTO(ctx, __exit);
     TUYA_CALL_ERR_GOTO(http_file_download_init(ctx, config), __exit);
-    /* TLS pre init */
-    TUYA_TRANSPORT_TYPE_E transport_type = (config->cacert == NULL) ? TRANSPORT_TYPE_TCP : TRANSPORT_TYPE_TLS;
+    /* TLS pre init - Use TLS for HTTPS URLs (port 443) or when cacert is provided */
+    bool is_https = (ctx->port == 443);
+    TUYA_TRANSPORT_TYPE_E transport_type = (is_https || config->cacert != NULL) ? TRANSPORT_TYPE_TLS : TRANSPORT_TYPE_TCP;
     NetworkContext_t network;
     TUYA_CHECK_NULL_GOTO(network = tuya_transporter_create(transport_type, NULL), __exit);
     if (transport_type == TRANSPORT_TYPE_TLS) {
@@ -223,15 +224,15 @@ int http_file_download(http_download_config_t *config)
             .hostname = (char *)ctx->host,
             .port = ctx->port,
             .mode = TUYA_TLS_SERVER_CERT_MODE,
-            .verify = true,
+            .verify = (config->cacert != NULL),  // Only verify if cert is provided
         };
 
         TUYA_CALL_ERR_GOTO(tuya_transporter_ctrl(network, TUYA_TRANSPORTER_SET_TLS_CONFIG, &tls_config), __exit);
     }
     /* http client TransportInterface */
     ctx->transport.pNetworkContext = (NetworkContext_t *)&network;
-    ctx->transport.send = NetworkTransportSend;
-    ctx->transport.recv = NetworkTransportRecv;
+    ctx->transport.send = (TransportSend_t)NetworkTransportSend;
+    ctx->transport.recv = (TransportRecv_t)NetworkTransportRecv;
 
     ctx->state = DL_STATE_NETWORK_CONNECT;
     TIME_T download_time = tal_time_get_posix();

@@ -17,15 +17,20 @@ English | [简体中文](./README_zh.md)
    +--------------------------------------------------+
    |     Status Bar (Date + WiFi Status)              | 50px
    +--------------------------------------------------+
-   |                      |                           |
-   |     Image Area       |      Time Display         |
-   |      (Left)          |        (Right)            |
+   |                      |       TODO List Area      | 300px
+   |     Image Area       +--------------------------+
+   |      (Left)          |    Time + Weather Area    | 130px
    |      350x430         |        450x430            |
    |                      |                           |
    +----------------------+---------------------------+
    ```
 
-3. **AI Image Generation & Display**
+3. **TODO List**
+   - Support up to 6 todo items
+   - Add, remove, mark as completed
+   - Efficient partial refresh updates
+
+4. **AI Image Generation & Display**
    - Parse AI responses for image URLs
    - Download JPEG images via HTTPS
    - Automatic scaling to fit display area
@@ -78,6 +83,38 @@ English | [简体中文](./README_zh.md)
 | `EPD_7in5_update_status(date_str, wifi)` | Partial refresh to update status bar |
 | `EPD_7in5_init_layout(date, time, wifi)` | Full refresh to initialize complete layout |
 | `EPD_7in5_display_downloaded_image(data, size)` | Display downloaded JPEG image with dithering |
+
+### TODO List Functions
+
+| Function | Description |
+| --- | --- |
+| `EPD_7in5_add_todo(text, completed)` | Add a todo item (completed: 0=pending, 1=done) |
+| `EPD_7in5_remove_todo(index)` | Remove todo item at specified index (0-based) |
+| `EPD_7in5_set_todo_completed(index, completed)` | Set completion status of a todo item |
+| `EPD_7in5_clear_todo()` | Clear all todo items |
+| `EPD_7in5_get_todo_count()` | Get current number of todo items |
+| `EPD_7in5_update_todo()` | Partial refresh to update TODO area |
+
+#### TODO Usage Example
+
+```c
+// Add todo items
+EPD_7in5_add_todo("Weekly Meeting 5pm", 0);  // Pending
+EPD_7in5_add_todo("Exercise 1 hour", 1);     // Completed
+
+// Mark first item as completed
+EPD_7in5_set_todo_completed(0, 1);
+
+// Remove second todo item
+EPD_7in5_remove_todo(1);
+
+// Refresh display
+EPD_7in5_update_todo();
+
+// Clear all todo items
+EPD_7in5_clear_todo();
+EPD_7in5_update_todo();
+```
 
 ### Refresh Strategy
 
