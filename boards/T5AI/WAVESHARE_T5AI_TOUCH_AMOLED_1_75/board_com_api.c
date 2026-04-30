@@ -35,6 +35,8 @@
 #define BOARD_LCD_QSPI_PORT        TUYA_QSPI_NUM_0
 #define BOARD_LCD_QSPI_CLK         (80 * 1000000)
 
+#define BOARD_LCD_BL_TYPE          TUYA_DISP_BL_TP_NONE
+
 #define BOARD_LCD_POWER_PIN        TUYA_GPIO_NUM_MAX
    
 #define BOARD_LCD_WIDTH            466

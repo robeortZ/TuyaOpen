@@ -206,7 +206,7 @@ void Paint_DrawTime(UWORD Xstart, UWORD Ystart, PAINT_TIME *pTime, sFONT* Font, 
 //pic
 void Paint_DrawBitMap(const unsigned char* image_buffer);
 
-
+void Paint_DrawString_CN_HZK24(UWORD Xstart, UWORD Ystart, const char *pString, UWORD Color_Foreground,UWORD Color_Background);
 #endif
 
 

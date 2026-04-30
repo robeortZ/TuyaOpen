@@ -83,6 +83,20 @@ void ui_set_assistant_msg_stream_end(void);
 void ui_set_assistant_msg_stream_interrupt(void);
 #endif
 
+/**
+ * @brief Cleanup UI resources
+ */
+void ui_cleanup(void);
+
+/**
+ * @brief Camera preview control functions
+ */
+#if defined(CAMERA_PREVIEW_ENABLE) && (CAMERA_PREVIEW_ENABLE == 1)
+void ui_camera_preview_start(void);
+void ui_camera_preview_stop(void);
+bool ui_camera_preview_is_running(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

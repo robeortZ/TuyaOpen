@@ -23,11 +23,25 @@
 
 #include "tuya_ringbuf.h"
 #include "tkl_mutex.h"
+#include "tal_memory.h"
+#include "tal_log.h"
+#include "tal_mutex.h"
+
+#if defined(ENABLE_EX_MODULE_CAMERA) && (ENABLE_EX_MODULE_CAMERA == 1)
+#include "camera_preview.h"
+#endif
 
 /***********************************************************
 ************************macro define************************
 ***********************************************************/
 #define MAX_MASSAGE_NUM           20
+
+// 摄像头预览配置 (占据半个屏幕)
+#define CAMERA_PREVIEW_WIDTH      320              // 屏幕宽度
+#define CAMERA_PREVIEW_HEIGHT     200              // 约占半屏高度
+#define CAMERA_SRC_WIDTH          480
+#define CAMERA_SRC_HEIGHT         480
+#define CAMERA_FPS                20
 #define STREAM_BUFF_MAX_LEN       1024
 #define STREAM_TEXT_SHOW_WORD_NUM 5
 #define ONE_WORD_MAX_LEN          4
@@ -49,7 +63,9 @@ typedef struct {
     lv_obj_t *network_label;
     lv_obj_t *notification_label;
     lv_obj_t *mute_label;
+    lv_obj_t *camera_img;       // 摄像头预览图像
 } APP_UI_T;
+
 
 typedef struct {
     bool is_start;
@@ -80,6 +96,10 @@ typedef struct {
 ***********************variable define**********************
 ***********************************************************/
 static APP_CHATBOT_UI_T sg_ui = {0};
+
+#if defined(ENABLE_EX_MODULE_CAMERA) && (ENABLE_EX_MODULE_CAMERA == 1)
+static CAMERA_PREVIEW_HANDLE_T sg_camera_preview = NULL;
+#endif
 
 /***********************************************************
 ***********************function define**********************
@@ -188,19 +208,71 @@ int ui_init(UI_FONT_T *ui_font)
     lv_obj_align(sg_ui.ui.emotion_label, LV_ALIGN_LEFT_MID, 0, 0);
     lv_label_set_text(sg_ui.ui.emotion_label, FONT_AWESOME_AI_CHIP);
 
-    // content
+    // content - 聊天内容区域 (上半部分)
+#if defined(ENABLE_EX_MODULE_CAMERA) && (ENABLE_EX_MODULE_CAMERA == 1)
+    // 有摄像头时，content 只占上半部分
+    int content_height = LV_VER_RES - 40 - CAMERA_PREVIEW_HEIGHT;
+#else
+    int content_height = LV_VER_RES - 40;
+#endif
     sg_ui.ui.content = lv_obj_create(sg_ui.ui.container);
-    lv_obj_set_size(sg_ui.ui.content, LV_HOR_RES, LV_VER_RES - 40);
+    lv_obj_set_size(sg_ui.ui.content, LV_HOR_RES, content_height);
     lv_obj_set_flex_flow(sg_ui.ui.content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_ver(sg_ui.ui.content, 8, 0);
     lv_obj_set_style_pad_hor(sg_ui.ui.content, 10, 0);
-    lv_obj_align(sg_ui.ui.content, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_move_background(sg_ui.ui.content);
+    lv_obj_align(sg_ui.ui.content, LV_ALIGN_TOP_MID, 0, 40);  // 紧跟状态栏下方
 
     lv_obj_set_scroll_dir(sg_ui.ui.content, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(sg_ui.ui.content, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_bg_opa(sg_ui.ui.content, LV_OPA_TRANSP, 0);
-
+#if 1
+#if defined(ENABLE_EX_MODULE_CAMERA) && (ENABLE_EX_MODULE_CAMERA == 1)
+    // 使用 camera_preview 模块创建摄像头预览
+    CAMERA_PREVIEW_CFG_T cam_cfg = {
+        .src_width   = CAMERA_SRC_WIDTH,
+        .src_height  = CAMERA_SRC_HEIGHT,
+        .fps         = CAMERA_FPS,
+        .dst_width   = CAMERA_PREVIEW_WIDTH,
+        .dst_height  = CAMERA_PREVIEW_HEIGHT,
+        .rotate      = CAMERA_ROTATE_90,     // 顺时针旋转 90°
+        .mirror_h    = false,
+        .mirror_v    = false,
+        .crop_only   = true,                 // true=裁剪模式(高性能), false=缩放模式(全景)
+        .parent      = sg_ui.ui.container,   // 自动创建 UI
+        .pos_x       = 0,
+        .pos_y       = LV_VER_RES - CAMERA_PREVIEW_HEIGHT,  // 底部
+    };
+    
+    OPERATE_RET rt = camera_preview_create(&cam_cfg, &sg_camera_preview);
+    if (OPRT_OK == rt) {
+        sg_ui.ui.camera_img = camera_preview_get_img_obj(sg_camera_preview);
+        
+        // 设置样式
+        if (sg_ui.ui.camera_img) {
+            lv_obj_set_style_border_width(sg_ui.ui.camera_img, 2, 0);
+            lv_obj_set_style_border_color(sg_ui.ui.camera_img, lv_palette_main(LV_PALETTE_GREEN), 0);
+        }
+        
+        // 启动摄像头
+        camera_preview_start(sg_camera_preview);
+        PR_NOTICE("Camera preview ready, size=%dx%d, rotate=%d", 
+                  CAMERA_PREVIEW_WIDTH, CAMERA_PREVIEW_HEIGHT, cam_cfg.rotate);
+    } else {
+        // 摄像头初始化失败，创建错误占位符
+        sg_ui.ui.camera_img = lv_obj_create(sg_ui.ui.container);
+        lv_obj_set_size(sg_ui.ui.camera_img, CAMERA_PREVIEW_WIDTH, CAMERA_PREVIEW_HEIGHT);
+        lv_obj_align(sg_ui.ui.camera_img, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(sg_ui.ui.camera_img, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(sg_ui.ui.camera_img, LV_OPA_COVER, 0);
+        
+        lv_obj_t *err_label = lv_label_create(sg_ui.ui.camera_img);
+        lv_label_set_text(err_label, "Camera Error");
+        lv_obj_set_style_text_color(err_label, lv_color_white(), 0);
+        lv_obj_center(err_label);
+        PR_ERR("Camera preview create failed: %d", rt);
+    }
+#endif
+#endif
     return 0;
 }
 
@@ -594,6 +666,16 @@ void ui_set_status_bar_pad(int32_t value)
 
     lv_obj_set_style_pad_left(sg_ui.ui.status_bar, value, 0);
     lv_obj_set_style_pad_right(sg_ui.ui.status_bar, value, 0);
+}
+
+void ui_deinit(void)
+{
+#if defined(ENABLE_EX_MODULE_CAMERA) && (ENABLE_EX_MODULE_CAMERA == 1)
+    if (sg_camera_preview) {
+        camera_preview_destroy(sg_camera_preview);
+        sg_camera_preview = NULL;
+    }
+#endif
 }
 
 #endif

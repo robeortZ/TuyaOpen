@@ -95,17 +95,17 @@ OPERATE_RET tdd_disp_qspi_co5300_set_init_seq(const uint8_t *init_seq)
  * 
  * @return OPERATE_RET Returns OPRT_OK on success, or error code on failure
  */
- OPERATE_RET tdd_qspi_co5300_send_cmd_set_bl(uint8_t brightness, void *arg)
- {
-     // map brightness to 0-255
-     brightness = (uint8_t)(((uint32_t)brightness * 255) / 100);
+OPERATE_RET tdd_qspi_co5300_send_cmd_set_bl(uint8_t brightness, void *arg)
+{
+    /* map brightness to 0-255 */
+    brightness = (uint8_t)(((uint32_t)brightness * 255) / 100);
 
-     if (brightness == 0) {
-         brightness = 5;
-     }
+    if (brightness == 0) {
+        brightness = 5;
+    }
 
-     return tdd_disp_qspi_send_cmd(&sg_disp_qspi_cfg.cfg, CO5300_BL, &brightness, 1);
- }
+    return tdd_disp_qspi_send_cmd(&sg_disp_qspi_cfg.cfg, CO5300_BL, &brightness, 1);
+}
 
 /**
  * @brief Registers the CO5300 QSPI display device with the display driver

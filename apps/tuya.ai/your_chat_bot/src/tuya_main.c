@@ -57,9 +57,16 @@
 #include "qrencode_print.h"
 #endif
 
+#if defined(ENABLE_QRCODE) && (ENABLE_QRCODE == 1)
+#include "qrencode_print.h"
+#endif
+
 /* Tuya device handle */
 tuya_iot_client_t ai_client;
 // static THREAD_HANDLE epd_app_thread_handle = NULL;
+
+/* Tuya license information (uuid authkey) */
+tuya_iot_license_t license;
 
 /* Tuya license information (uuid authkey) */
 tuya_iot_license_t license;

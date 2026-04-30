@@ -691,6 +691,121 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char * pString, cFONT
     }
 }
 
+// Helper to draw Chinese string with HZK24
+void Paint_DrawString_CN_HZK24(
+    UWORD Xstart, 
+    UWORD Ystart, 
+    const char *pString, 
+    UWORD Color_Foreground,
+    UWORD Color_Background
+) {
+    // Extern declaration if header include fails
+    extern int hzk24_get_font_data(uint8_t gb_high, uint8_t gb_low, uint8_t *buffer);
+
+    const char *p_text = pString;
+    int x = Xstart;
+    int y = Ystart;
+
+    while (*p_text != 0) {
+        // Handle control characters
+        if ((uint8_t)*p_text < 0x20) {
+            if (*p_text == '\n') {
+                x = Xstart;
+                y += 24;
+                p_text++;
+                continue;
+            }
+            if (*p_text == '\r') {
+                // Ignore CR if followed by LF, otherwise treat as newline
+                if (*(p_text + 1) == '\n') {
+                    p_text++;
+                    continue;
+                } else {
+                    x = Xstart;
+                    y += 24;
+                    p_text++;
+                    continue;
+                }
+            }
+            if (*p_text == '\t') {
+                // Tab = 4 spaces
+                for (int i = 0; i < 4; i++) {
+                    if (x + Font24.Width > Paint.WidthMemory) {
+                        x = Xstart;
+                        y += 24;
+                        if (y + 24 > Paint.HeightMemory)
+                            break;
+                    }
+                    Paint_DrawChar(x, y, ' ', &Font24, Color_Foreground, Color_Background);
+                    x += Font24.Width;
+                }
+                p_text++;
+                continue;
+            }
+            // Skip other control characters
+            p_text++;
+            continue;
+        }
+
+        // Stop if out of vertical bounds
+        if (y + 24 > Paint.HeightMemory)
+            break;
+
+        if ((uint8_t)*p_text < 0x80) {
+            // ASCII
+            // Check horizontal bounds
+            if (x + Font24.Width > Paint.WidthMemory) {
+                x = Xstart;
+                y += 24;
+                if (y + 24 > Paint.HeightMemory)
+                    break;
+            }
+            Paint_DrawChar(x, y, *p_text, &Font24, Color_Foreground, Color_Background);
+            x += Font24.Width;
+            p_text++;
+        } else {
+            // GBK - 2 bytes
+            // Check horizontal bounds
+            if (x + 24 > Paint.WidthMemory) {
+                x = Xstart;
+                y += 24;
+                if (y + 24 > Paint.HeightMemory)
+                    break;
+            }
+
+            uint8_t gb_high = (uint8_t)*p_text;
+            uint8_t gb_low  = (uint8_t)*(p_text + 1);
+
+            // Check bounds and validity
+            if (gb_low == 0)
+                break;
+
+            uint8_t buffer[72]; // 24*24/8 = 72 bytes
+            if (hzk24_get_font_data(gb_high, gb_low, buffer) == 0) {
+                // Found font - Draw 24x24 bitmap
+                for (int row = 0; row < 24; row++) {
+                    for (int col_byte = 0; col_byte < 3; col_byte++) {
+                        uint8_t data = buffer[row * 3 + col_byte];
+                        for (int bit = 0; bit < 8; bit++) {
+                            if (data & (0x80 >> bit)) {
+                                Paint_SetPixel(x + col_byte * 8 + bit, y + row, Color_Foreground);
+                            } else {
+                                Paint_SetPixel(x + col_byte * 8 + bit, y + row, Color_Background);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Not found, draw '?'
+                Paint_DrawChar(x, y, '?', &Font24, Color_Foreground, Color_Background);
+            }
+
+            x += 24;
+            p_text += 2;
+        }
+    }
+}
+
 /******************************************************************************
 function:	Display nummber
 parameter:
