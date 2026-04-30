@@ -22,6 +22,11 @@ if (CONFIG_ENABLE_IMU_BMI270 STREQUAL "y")
     list(APPEND LIB_PUBLIC_INC ${MODULE_PATH}/bmi270)
 endif()
 
+if (CONFIG_ENABLE_IMU_BMI220 STREQUAL "y")
+    file(GLOB BMI220_SOURCES "${MODULE_PATH}/bmi220/*.c")
+    list(APPEND LIB_SRCS ${BMI220_SOURCES})
+endif()
+
 ########################################
 # Target Configure
 ########################################

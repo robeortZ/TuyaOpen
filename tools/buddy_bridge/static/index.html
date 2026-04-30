@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Buddy Bridge 控制台</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --green: #3fb950; --blue: #58a6ff; --yellow: #d29922;
+    --red: #f85149; --purple: #a371f7; --orange: #e3b341;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+  header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 16px; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.on  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.off { background: var(--muted); }
+  .dot.warn { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+
+  main { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; gap: 12px; padding: 16px; height: calc(100vh - 53px); }
+
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 12px; }
+
+  /* ── 状态卡片 ── */
+  #state-card { grid-column: 1; }
+  .state-badge {
+    display: inline-block; padding: 6px 16px; border-radius: 20px;
+    font-size: 18px; font-weight: 700; letter-spacing: .05em;
+    margin-bottom: 16px; transition: background .3s, color .3s;
+  }
+  .state-DISCONNECTED { background: #21262d; color: var(--muted); }
+  .state-IDLE         { background: #0d3b2e; color: var(--green); }
+  .state-BUSY         { background: #0c1e3d; color: var(--blue);  animation: pulse 1.5s infinite; }
+  .state-ATTENTION    { background: #3d1a0c; color: var(--orange); animation: flash .7s infinite; }
+  .state-CELEBRATE    { background: #2a0d3d; color: var(--purple); }
+  .state-DIZZY        { background: #3d2e0c; color: var(--yellow); animation: spin 1s linear infinite; }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+  @keyframes flash { 0%,100%{opacity:1} 50%{opacity:.3} }
+  @keyframes spin  { from{filter:hue-rotate(0)} to{filter:hue-rotate(360deg)} }
+
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .stat-box { background: var(--bg3); border-radius: 6px; padding: 10px; }
+  .stat-box .label { font-size: 11px; color: var(--muted); }
+  .stat-box .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+
+  .action-box { background: #3d1a0c; border: 1px solid #7d3a1c; border-radius: 6px; padding: 12px; margin-top: 12px; display: none; }
+  .action-box.visible { display: block; }
+  .action-box .prompt { font-size: 13px; color: var(--orange); margin-bottom: 8px; }
+  .action-box .id     { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+
+  /* ── 连接卡片 ── */
+  #conn-card { grid-column: 2; }
+  .conn-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .conn-row:last-child { border-bottom: none; }
+  .conn-label { display: flex; align-items: center; gap: 8px; }
+
+  /* ── 控制卡片 ── */
+  #ctrl-card { grid-column: 1 / 3; max-height: 310px; overflow-y: auto; }
+  .ctrl-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  button {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg3); color: var(--text); cursor: pointer; font-size: 13px;
+    transition: background .15s;
+  }
+  button:hover { background: var(--border); }
+  button.primary { border-color: var(--blue); color: var(--blue); }
+  button.danger  { border-color: var(--red);  color: var(--red); }
+  button.success { border-color: var(--green);color: var(--green); }
+  input[type=text] {
+    background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 5px 10px; font-size: 13px; width: 280px;
+  }
+
+  /* ── 日志卡片 ── */
+  #log-card { grid-column: 1 / 3; }
+  .log-wrap { height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+  .log-entry { padding: 3px 0; border-bottom: 1px solid var(--bg3); display: flex; gap: 10px; }
+  .log-ts   { color: var(--muted); min-width: 60px; }
+  .log-src  { min-width: 90px; }
+  .log-src.device  { color: var(--blue); }
+  .log-src.claude_desktop { color: var(--purple); }
+  .log-src.bridge  { color: var(--muted); }
+  .log-dir  { min-width: 30px; }
+  .log-text { color: var(--text); word-break: break-all; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot off" id="ws-dot"></span>
+  <h1>🤖 Buddy Bridge 控制台</h1>
+  <span style="color:var(--muted); font-size:12px;" id="header-status">正在连接桥接服务…</span>
+</header>
+
+<main>
+
+  <!-- ── 状态卡片 ── -->
+  <div class="card" id="state-card">
+    <h2>当前状态</h2>
+    <div id="state-badge" class="state-badge state-DISCONNECTED">已断开</div>
+    <p style="color:var(--muted); font-size:12px; margin-bottom:8px;" id="state-message"></p>
+
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="label">活跃会话数</div>
+        <div class="value" id="stat-sessions">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="label">累计 Token</div>
+        <div class="value" id="stat-tokens">0</div>
+      </div>
+    </div>
+
+    <div class="action-box" id="action-box">
+      <div class="prompt" id="action-prompt">权限请求中…</div>
+      <div class="id" id="action-id"></div>
+      <div style="display:flex; gap:8px;">
+        <button class="success" onclick="sendDeviceEvent('approve')">✅ 批准</button>
+        <button class="danger"  onclick="sendDeviceEvent('deny')">❌ 拒绝</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 连接卡片 ── -->
+  <div class="card" id="conn-card">
+    <h2>连接状态</h2>
+    <div class="conn-row">
+      <div class="conn-label">
+        <span class="dot off" id="dot-device"></span>
+        <span>设备 (T5AI PIXEL)</span>
+      </div>
+      <span style="color:var(--muted); font-size:11px;" id="device-status">等待中…</span>
+    </div>
+    <div class="conn-row">
+      <div class="conn-label">
+        <span class="dot off" id="dot-ble"></span>
+        <span>Claude Desktop (BLE)</span>
+      </div>
+      <span style="color:var(--muted); font-size:11px;" id="ble-status">未连接</span>
+    </div>
+    <div class="conn-row">
+      <div class="conn-label">
+        <span class="dot off" id="dot-ws"></span>
+        <span>控制台 (WebSocket)</span>
+      </div>
+      <span style="color:var(--muted); font-size:11px;" id="ws-status">连接中…</span>
+    </div>
+
+    <div style="margin-top:16px;">
+      <div style="font-size:11px; color:var(--muted); margin-bottom:6px;">设备 IP 配置</div>
+      <div style="font-size:12px; color:var(--text);">
+        将以下地址填入设备 Kconfig 的 BRIDGE_HOST：<br>
+        <code id="my-ip" style="color:var(--blue);">加载中…</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 手动控制卡片 ── -->
+  <div class="card" id="ctrl-card">
+    <h2>手动测试控制</h2>
+    <div class="ctrl-row">
+      <span style="color:var(--muted); font-size:11px; min-width:80px;">设置状态：</span>
+      <button onclick="setState('DISCONNECTED')">已断开</button>
+      <button class="primary" onclick="setState('IDLE')">空闲</button>
+      <button class="primary" onclick="setState('BUSY')">忙碌</button>
+      <button class="danger"  onclick="setState('ATTENTION')">等待审批</button>
+      <button onclick="setState('CELEBRATE')">庆祝</button>
+      <button onclick="setState('DIZZY')">眩晕</button>
+    </div>
+    <div class="ctrl-row">
+      <span style="color:var(--muted); font-size:11px; min-width:80px;">权限请求：</span>
+      <input type="text" id="prompt-input" placeholder="输入权限说明…" value="读取文件 ~/.ssh/config">
+      <button class="danger" onclick="sendAttention()">⚠️ 触发权限请求</button>
+    </div>
+    <div class="ctrl-row">
+      <span style="color:var(--muted); font-size:11px; min-width:80px;">统计数据：</span>
+      <input type="text" id="sessions-input" placeholder="会话数" style="width:80px;" value="3">
+      <input type="text" id="tokens-input"   placeholder="token数" style="width:100px;" value="12500">
+      <input type="text" id="message-input"  placeholder="消息"    style="width:200px;" value="正在分析代码…">
+      <button onclick="updateStats()">应用</button>
+    </div>
+    <div class="ctrl-row">
+      <span style="color:var(--muted); font-size:11px; min-width:80px;">模拟 BLE：</span>
+      <button onclick="simulateBLE('session_state', {running:2,waiting:0,sessions:5,tokens:8000})">▶ 运行中</button>
+      <button onclick="simulateBLE('session_state', {running:0,waiting:1,sessions:5,tokens:8000})">⏸ 等待审批</button>
+      <button onclick="simulateBLE('session_state', {running:0,waiting:0,sessions:5,tokens:8000})">✓ 已完成</button>
+      <button onclick="simulateBLE('permission_request', {id:'abc123',prompt:'读取 ~/.ssh/id_rsa'})">🔐 权限请求</button>
+    </div>
+    <div class="ctrl-row">
+      <span style="color:var(--muted); font-size:11px; min-width:80px;">动画列表：</span>
+      <span style="font-size:11px; color:var(--muted);">
+        <b style="color:var(--text);">断开</b>: sleeping &nbsp;|&nbsp;
+        <b style="color:var(--text);">空闲</b>: idle &nbsp;|&nbsp;
+        <b style="color:var(--text);">忙碌(循环7个)</b>: building → carrying → conducting → debugger → sweeping → thinking → typing &nbsp;|&nbsp;
+        <b style="color:var(--text);">审批</b>: notification &nbsp;|&nbsp;
+        <b style="color:var(--text);">庆祝(交替)</b>: happy / juggling &nbsp;|&nbsp;
+        <b style="color:var(--text);">眩晕</b>: conducting
+      </span>
+    </div>
+  </div>
+
+  <!-- ── 日志卡片 ── -->
+  <div class="card" id="log-card">
+    <h2>事件日志 <button onclick="clearLog()" style="margin-left:8px; padding:2px 8px; font-size:11px;">清空</button></h2>
+    <div class="log-wrap" id="log-wrap"></div>
+  </div>
+
+</main>
+
+<script>
+let ws = null;
+let currentState = {};
+let pendingActionId = "";
+let reconnectTimer = null;
+
+// ── 来源名称中文映射 ─────────────────────────────────────────────────────────
+const SRC_LABEL = {
+  device:         "设备",
+  claude_desktop: "Claude Desktop",
+  bridge:         "桥接服务",
+};
+
+// ── 状态名称中文映射 ─────────────────────────────────────────────────────────
+const STATE_LABEL = {
+  DISCONNECTED: "已断开",
+  IDLE:         "空闲",
+  BUSY:         "忙碌",
+  ATTENTION:    "等待审批",
+  CELEBRATE:    "庆祝",
+  DIZZY:        "眩晕",
+};
+
+// ── WebSocket 连接 ────────────────────────────────────────────────────────────
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById("ws-dot").className = "dot on";
+    document.getElementById("ws-status").textContent = "已连接";
+    document.getElementById("header-status").textContent = "桥接服务在线";
+    document.getElementById("dot-ws").className = "dot on";
+    clearTimeout(reconnectTimer);
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "init") {
+      (msg.log || []).forEach(appendLog);
+      applyState(msg);
+    } else if (msg.type === "state_update") {
+      applyState(msg);
+    } else if (msg.type === "log") {
+      appendLog(msg.entry);
+    }
+  };
+
+  ws.onclose = () => {
+    document.getElementById("ws-dot").className = "dot warn";
+    document.getElementById("ws-status").textContent = "重新连接中…";
+    document.getElementById("dot-ws").className = "dot warn";
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+
+  // 每 10 秒发一次心跳
+  setInterval(() => { if (ws.readyState === 1) ws.send("ping"); }, 10000);
+}
+
+// ── 应用状态 ──────────────────────────────────────────────────────────────────
+function applyState(msg) {
+  const buddy = msg.buddy;
+  currentState = buddy;
+
+  // 状态徽章
+  const badge = document.getElementById("state-badge");
+  badge.textContent = STATE_LABEL[buddy.state] || buddy.state;
+  badge.className = "state-badge state-" + buddy.state;
+
+  // 消息
+  document.getElementById("state-message").textContent = buddy.message || "";
+
+  // 统计
+  document.getElementById("stat-sessions").textContent = buddy.sessions || 0;
+  document.getElementById("stat-tokens").textContent   = (buddy.tokens || 0).toLocaleString();
+
+  // 权限审批框
+  const action = buddy.action || {};
+  const actionBox = document.getElementById("action-box");
+  if (action.id && buddy.state === "ATTENTION") {
+    pendingActionId = action.id;
+    document.getElementById("action-prompt").textContent = action.prompt || "请求权限中";
+    document.getElementById("action-id").textContent = "ID: " + action.id;
+    actionBox.classList.add("visible");
+  } else {
+    actionBox.classList.remove("visible");
+    pendingActionId = "";
+  }
+
+  // 连接指示灯
+  document.getElementById("dot-device").className  = "dot " + (msg.device_online ? "on" : "off");
+  document.getElementById("device-status").textContent = msg.device_online ? "在线（轮询中）" : "离线";
+
+  document.getElementById("dot-ble").className = "dot " + (msg.ble_connected ? "on" : "off");
+  document.getElementById("ble-status").textContent = msg.ble_connected
+    ? ("已连接：" + (msg.ble_device || ""))
+    : "未连接";
+
+  // 显示本机 IP（供设备配置）
+  document.getElementById("my-ip").textContent = location.hostname + ":" + location.port;
+}
+
+// ── 日志 ──────────────────────────────────────────────────────────────────────
+function appendLog(entry) {
+  const wrap = document.getElementById("log-wrap");
+  const div  = document.createElement("div");
+  div.className = "log-entry";
+  const srcLabel = SRC_LABEL[entry.source] || entry.source;
+  div.innerHTML = `
+    <span class="log-ts">${entry.ts}</span>
+    <span class="log-src ${entry.source}">${srcLabel}</span>
+    <span class="log-dir">${entry.direction}</span>
+    <span class="log-text">${escHtml(entry.text)}</span>`;
+  wrap.appendChild(div);
+  while (wrap.children.length > 100) wrap.removeChild(wrap.firstChild);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function escHtml(t) {
+  return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function clearLog() {
+  document.getElementById("log-wrap").innerHTML = "";
+}
+
+// ── 手动控制 ──────────────────────────────────────────────────────────────────
+async function setState(state) {
+  await fetch("/api/test/set_state", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ state }),
+  });
+}
+
+async function sendAttention() {
+  const prompt = document.getElementById("prompt-input").value.trim() || "请求权限";
+  await fetch("/api/test/set_state", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ state: "ATTENTION", prompt }),
+  });
+}
+
+async function updateStats() {
+  const sessions = parseInt(document.getElementById("sessions-input").value) || 0;
+  const tokens   = parseInt(document.getElementById("tokens-input").value)   || 0;
+  const message  = document.getElementById("message-input").value.trim();
+  await fetch("/api/test/set_state", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ state: currentState.state, sessions, tokens, message }),
+  });
+}
+
+async function sendDeviceEvent(type) {
+  await fetch("/api/test/send_event", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ event: type, action_id: pendingActionId }),
+  });
+}
+
+async function simulateBLE(type, extra) {
+  await fetch("/api/test/simulate_ble", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ type, ...extra }),
+  });
+}
+
+// ── 启动 ─────────────────────────────────────────────────────────────────────
+connect();
+</script>
+</body>
+</html>

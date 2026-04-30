@@ -133,6 +133,11 @@ void lv_vendor_stop(void)
     PR_NOTICE("%s complete\n", __func__);
 }
 
+void lv_vendor_set_backlight(uint8_t brightness)
+{
+    disp_set_backlight(lv_display_get_default(), brightness);
+}
+
 void lv_vendor_add_disp_dev(void *device)
 {
     if(false == lv_vendor_initialized) {

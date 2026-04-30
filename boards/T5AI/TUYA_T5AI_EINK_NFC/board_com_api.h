@@ -21,6 +21,15 @@
 extern "C" {
 #endif
 
+// Button name definitions
+#define BOARD_BUTTON_NAME_UP     "btn_up"
+#define BOARD_BUTTON_NAME_DOWN   "btn_down"
+#define BOARD_BUTTON_NAME_ENTER  "btn_enter"
+#define BOARD_BUTTON_NAME_RETURN "btn_return"
+#define BOARD_BUTTON_NAME_LEFT   "btn_left"
+#define BOARD_BUTTON_NAME_RIGHT  "btn_right"
+
+#define BOARD_LED_NAME "user_led"
 /***********************************************************
 ************************macro define************************
 ***********************************************************/

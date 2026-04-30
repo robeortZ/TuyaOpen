@@ -225,15 +225,10 @@ static OPERATE_RET __board_register_display(void)
     eink_cfg.power.pin          = TUYA_GPIO_NUM_MAX;
     eink_cfg.power.active_level = TUYA_GPIO_LEVEL_HIGH;
 
-    // Set backlight pin to MAX to indicate no backlight control
-    // eink_cfg.bl.gpio.pin               = TUYA_GPIO_NUM_MAX;
-    eink_cfg.bl.type               = TUYA_DISP_BL_TP_PWM;
-    eink_cfg.bl.pwm.id             = TUYA_PWM_NUM_9;
-    eink_cfg.bl.pwm.cfg.frequency  = 1000;              // PWM frequency in Hz
-    eink_cfg.bl.pwm.cfg.duty       = 5000;              // Duty value (for 50%: duty=5000, cycle=10000)
-    eink_cfg.bl.pwm.cfg.cycle      = 10000;             // Cycle value
-    eink_cfg.bl.pwm.cfg.polarity   = TUYA_PWM_POSITIVE; // Normal polarity
-    eink_cfg.bl.pwm.cfg.count_mode = TUYA_PWM_CNT_UP;   // Count up mode
+    // Set backlight to GPIO control (ON/OFF for e-ink front light)
+    eink_cfg.bl.type               = TUYA_DISP_BL_TP_GPIO;
+    eink_cfg.bl.gpio.pin           = BOARD_EINK_BL_PIN;
+    eink_cfg.bl.gpio.active_level  = BOARD_EINK_BL_ACTIVE_LV;
 
     TUYA_CALL_ERR_RETURN(tdd_disp_spi_mono_uc8276_register(DISPLAY_NAME, &eink_cfg));
 
@@ -284,19 +279,18 @@ static OPERATE_RET __board_register_charge_detect(void)
 {
     OPERATE_RET rt = OPRT_OK;
 
-    // Initialize charge detect GPIO and interrupt
-    // Disabled for now - interrupt mode not supported
-    // rt = board_charge_detect_init();
-    // if (OPRT_OK != rt) {
-    //     return rt;
-    // }
+    // Initialize charge detect GPIO (interrupt may fallback to polling mode)
+    rt = board_charge_detect_init();
+    if (OPRT_OK != rt) {
+        PR_WARN("Charge detect init failed: %d (non-fatal)", rt);
+    }
 
-    // Initialize battery ADC reading (this works independently of charge detect interrupt)
-    // rt = board_battery_adc_init();
-    // if (OPRT_OK != rt) {
-    //     PR_ERR("Failed to initialize battery ADC: %d", rt);
-    //     return rt;
-    // }
+    // Initialize battery ADC reading
+    rt = board_battery_adc_init();
+    if (OPRT_OK != rt) {
+        PR_ERR("Failed to initialize battery ADC: %d", rt);
+        return rt;
+    }
 
     return rt;
 }
@@ -306,12 +300,12 @@ static OPERATE_RET __board_sdio_pin_register(void)
     OPERATE_RET rt = OPRT_OK;
 
     // Configure SDIO pinmux
-    tkl_io_pinmux_config(TUYA_GPIO_NUM_14, TUYA_SDIO_CLK);
-    tkl_io_pinmux_config(TUYA_GPIO_NUM_15, TUYA_SDIO_CMD);
-    tkl_io_pinmux_config(TUYA_GPIO_NUM_16, TUYA_SDIO_DATA0);
-    tkl_io_pinmux_config(TUYA_GPIO_NUM_17, TUYA_SDIO_DATA1);
-    tkl_io_pinmux_config(TUYA_GPIO_NUM_18, TUYA_SDIO_DATA2);
-    tkl_io_pinmux_config(TUYA_GPIO_NUM_19, TUYA_SDIO_DATA3);
+    tkl_io_pinmux_config(TUYA_GPIO_NUM_14, TUYA_SDIO_HOST_CLK);
+    tkl_io_pinmux_config(TUYA_GPIO_NUM_15, TUYA_SDIO_HOST_CMD);
+    tkl_io_pinmux_config(TUYA_GPIO_NUM_16, TUYA_SDIO_HOST_D0);
+    tkl_io_pinmux_config(TUYA_GPIO_NUM_17, TUYA_SDIO_HOST_D1);
+    tkl_io_pinmux_config(TUYA_GPIO_NUM_18, TUYA_SDIO_HOST_D2);
+    tkl_io_pinmux_config(TUYA_GPIO_NUM_19, TUYA_SDIO_HOST_D3);
 
     // Ensure SD card power domain is enabled
     rt = board_power_domain_sd_3v3_enable();

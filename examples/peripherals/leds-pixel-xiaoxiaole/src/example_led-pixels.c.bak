@@ -1,0 +1,798 @@
+/**
+ * @file example_led-pixels.c
+ * @brief Color Shooter Game - WS2812 LED Strip Game Implementation
+ *
+ * RGB 色块从 LED 条顶端下落，玩家用下面的按钮射击对应面色的子弹消除色块。
+ * 游戏逻辑：面色匹配消除 + 行机小游戏 + 记分/难度系统。
+ *
+ * 核心特性：
+ * - WS2812 LED 条动态渲染（150~300 LED 可配）
+ * - RGB 色块生成与下落（可调难度）
+ * - 子弹射击与碰撞检测（含壳弹机制）
+ * - 线程安全的按钮输入处理
+ * - 音频支持（射击、命中、游戏结束音效）
+ *
+ * @copyright Copyright (c) 2021-2024 Tuya Inc. All Rights Reserved.
+ *
+ */
+#include "tal_system.h"
+#include "tal_api.h"
+#include <math.h>
+#include <string.h>
+
+#include "tkl_output.h"
+
+#include "tdl_pixel_dev_manage.h"
+#include "tdl_pixel_color_manage.h"
+#include "tdl_button_manage.h"
+
+#include "board_com_api.h"
+#include "pixel_driver.h"
+#include "button_driver.h"
+
+/***********************************************************
+************************macro define************************
+***********************************************************/
+
+/* ===== LED Strip Config ===== */
+#define LED_PIXELS_TOTAL_NUM 100                      /* LED 条总数：150~300 可配 */
+#define COLOR_RESOLUTION 1000                         /* 色彩分辨率 */
+
+/* ===== Game Play Area ===== */
+#define GAME_FIELD_START 3                            /* 可玩区域起始索引（0~2 为装饰/火焰区） */
+#define GAME_FLAME_ZONE 3                             /* 火焰危险区域阈值 */
+#define GAME_MAX_BLOCKS 16                            /* 同时存在的最大色块数 */
+#define GAME_MAX_BULLETS 4                            /* 同时存在的最大子弹数 */
+
+/* ===== Game Mechanics ===== */
+#define GAME_SCORE_PER_HIT 10                         /* 每次命中得分 */
+#define GAME_SCORE_PENALTY 0                          /* 偏离惩罚（原始为 0） */
+#define GAME_LEVEL_UP_SCORE 100                       /* 升级所需分数 */
+#define GAME_MAX_LEVEL 10                             /* 最大难度等级 */
+#define GAME_MAX_LIVES 3                              /* 最大生命值 */
+#define GAME_BULLET_SPEED_MS 20                       /* 子弹移动间隔（ms） */
+
+/* ===== Timing ===== */
+#define GAME_RENDER_INTERVAL_MS 15                    /* 渲染帧间隔（ms） */
+#define GAME_DISPLAY_UPDATE_MS 300                    /* HUD 更新间隔（ms） */
+#define GAME_FLASH_DURATION_MS 100                    /* 碰撞闪烁持续时间（ms） */
+
+/* ===== Spawn/Fall Tables（难度表）===== */
+#define SPAWN_TABLE_MAX 10
+#define FALL_TABLE_MAX 10
+
+/***********************************************************
+***********************typedef define***********************
+***********************************************************/
+
+typedef enum {
+    SHOT_NONE = 0,
+    SHOT_RED = 1,
+    SHOT_GREEN = 2,
+    SHOT_BLUE = 3,
+} ShotType_t;
+
+typedef struct {
+    uint32_t pos;         /* LED 条上的位置 */
+    uint8_t color;        /* 0=Red, 1=Green, 2=Blue */
+    uint8_t active;       /* 1=活跃，0=已消除 */
+    uint8_t is_shell;     /* 1=壳弹(爆炸特效)，0=普通 */
+} Block_t;
+
+typedef struct {
+    uint32_t pos;         /* 子弹位置 */
+    uint8_t color;        /* 0=Red, 1=Green, 2=Blue */
+    uint8_t active;       /* 1=活跃，0=消除 */
+} Bullet_t;
+
+typedef struct {
+    uint32_t score;
+    uint32_t combo;
+    uint32_t level;
+    uint32_t lives;
+    uint8_t game_over;
+    uint8_t game_started;
+} GameState_t;
+
+typedef struct {
+    PIXEL_COLOR_T color;
+    uint32_t spawn_interval;  /* 色块生成间隔 (ms) */
+    uint32_t fall_interval;   /* 色块下落间隔 (ms) */
+} LevelConfig_t;
+
+/***********************************************************
+***********************variable define**********************
+***********************************************************/
+
+static PIXEL_HANDLE_T sg_pixels_handle = NULL;
+static Block_t s_blocks[GAME_MAX_BLOCKS] = {0};
+static Bullet_t s_bullets[GAME_MAX_BULLETS] = {0};
+static GameState_t s_game_state = {0};
+
+/* Button driver handle */
+static button_driver_handle_t sg_button_handle = {0};
+
+/* 按钮状态 - 线程安全标志 */
+static volatile ShotType_t s_pending_shot = SHOT_NONE;
+static volatile uint8_t s_enter_strip_len_mode = 0;
+static volatile uint8_t s_enter_brightness_mode = 0;
+
+/* 时间戳 */
+static uint32_t s_last_bullet_ms = 0;
+static uint32_t s_last_fall_ms = 0;
+static uint32_t s_last_spawn_ms = 0;
+static uint32_t s_last_render_ms = 0;
+static uint32_t s_last_display_ms = 0;
+static uint32_t s_flash_start_ms = 0;
+
+/* 闪烁效果缓冲 */
+static uint8_t s_flash[3] = {0, 0, 0};  /* R,G,B 闪烁状态 */
+
+/***********************************************************
+*********************** const define ***********************
+***********************************************************/
+
+/* RGB 色值 */
+static const PIXEL_COLOR_T cCOLOR_RED = {
+    .warm = 0, .cold = 0, .red = 255, .green = 0, .blue = 0,
+};
+static const PIXEL_COLOR_T cCOLOR_GREEN = {
+    .warm = 0, .cold = 0, .red = 0, .green = 255, .blue = 0,
+};
+static const PIXEL_COLOR_T cCOLOR_BLUE = {
+    .warm = 0, .cold = 0, .red = 0, .green = 0, .blue = 255,
+};
+static const PIXEL_COLOR_T cCOLOR_BLACK = {
+    .warm = 0, .cold = 0, .red = 0, .green = 0, .blue = 0,
+};
+static const PIXEL_COLOR_T cCOLOR_WHITE = {
+    .warm = 0, .cold = 0, .red = 255, .green = 255, .blue = 255,
+};
+
+/* 难度表 - 每个级别的生成和下落间隔 */
+static const LevelConfig_t s_level_config[GAME_MAX_LEVEL] = {
+    { cCOLOR_RED,   800, 500 },   /* Level 1 */
+    { cCOLOR_RED,   700, 450 },   /* Level 2 */
+    { cCOLOR_RED,   600, 400 },   /* Level 3 */
+    { cCOLOR_RED,   500, 350 },   /* Level 4 */
+    { cCOLOR_RED,   450, 300 },   /* Level 5 */
+    { cCOLOR_RED,   400, 250 },   /* Level 6 */
+    { cCOLOR_RED,   350, 200 },   /* Level 7 */
+    { cCOLOR_RED,   300, 180 },   /* Level 8 */
+    { cCOLOR_RED,   250, 150 },   /* Level 9 */
+    { cCOLOR_RED,   200, 120 },   /* Level 10 */
+};
+
+/***********************************************************
+***********************function declare**********************
+***********************************************************/
+static void __btn_cb(ShotType_t shot_type);
+static void __btn_event_red(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc);
+static void __btn_event_green(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc);
+static void __btn_event_blue(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc);
+static void __pixel_init(void);
+static void __buttons_init(void);
+static void __reset_game(void);
+static void __create_bullet(ShotType_t shot_type);
+static void __create_shell(uint32_t pos);
+static void __move_bullets(void);
+static void __fall_blocks(void);
+static void __spawn_block(void);
+static void __check_collisions(void);
+static void __check_level_up(void);
+static void __render_strip(void);
+static void __game_over_sequence(void);
+static void __wait_for_restart(void);
+
+/***********************************************************
+***********************function define**********************
+***********************************************************/
+
+/**
+ * @brief Initialize LED pixel device
+ */
+static void __pixel_init(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+
+    /* Register and initialize pixel LED driver */
+    rt = pixel_driver_init();
+    if (rt != OPRT_OK) {
+        PR_ERR("Failed to initialize pixel driver: %d", rt);
+        return;
+    }
+
+    /* Find LED strip device */
+    rt = tdl_pixel_dev_find("pixel", &sg_pixels_handle);
+    if (rt != OPRT_OK) {
+        PR_ERR("Failed to find pixel device: %d", rt);
+        return;
+    }
+
+    /* Open and configure */
+    PIXEL_DEV_CONFIG_T pixels_cfg = {
+        .pixel_num = LED_PIXELS_TOTAL_NUM,
+        .pixel_resolution = COLOR_RESOLUTION,
+    };
+    rt = tdl_pixel_dev_open(sg_pixels_handle, &pixels_cfg);
+    if (rt != OPRT_OK) {
+        PR_ERR("Failed to open pixel device: %d", rt);
+    }
+
+    PR_NOTICE("LED pixel initialized: %u LEDs", LED_PIXELS_TOTAL_NUM);
+}
+
+/**
+ * @brief Initialize button inputs
+ */
+static void __buttons_init(void)
+{
+    button_driver_config_t btn_config;
+    button_driver_get_default_config(&btn_config);
+
+    /* Override callbacks */
+    btn_config.button1_callback = __btn_event_red;
+    btn_config.button2_callback = __btn_event_green;
+    btn_config.button3_callback = __btn_event_blue;
+
+    OPERATE_RET rt = button_driver_init(&btn_config, &sg_button_handle);
+    if (rt != OPRT_OK) {
+        PR_ERR("Failed to initialize buttons: %d", rt);
+    }
+}
+
+/**
+ * @brief Audio frame callback (required for TDL audio device)
+ */
+static void __audio_frame_callback(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status,
+                                   uint8_t *data, uint32_t len)
+{
+    /* Frame data callback - not used for playback mode */
+    return;
+}
+
+/**
+ * @brief Audio player state event handler
+ */
+static OPERATE_RET __audio_player_event(void *data)
+{
+    if (data == NULL) {
+        return OPRT_OK;
+    }
+
+    AI_PLAYER_EVT_T *event = (AI_PLAYER_EVT_T*)data;
+
+    if (event->state == AI_PLAYER_STOPPED) {
+        PR_DEBUG("Audio player stopped");
+    } else if (event->state == AI_PLAYER_PLAYING) {
+        PR_DEBUG("Audio player playing");
+    } else if (event->state == AI_PLAYER_PAUSED) {
+        PR_DEBUG("Audio player paused");
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Initialize audio device and player
+ */
+static void __audio_init(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+
+    /* Open audio codec device */
+    rt = tdl_audio_find(AUDIO_CODEC_NAME, &sg_audio_handle);
+    if (rt != OPRT_OK) {
+        PR_WARN("Failed to find audio device: %d", rt);
+        return;
+    }
+
+    rt = tdl_audio_open(sg_audio_handle, __audio_frame_callback);
+    if (rt != OPRT_OK) {
+        PR_WARN("Failed to open audio device: %d", rt);
+        return;
+    }
+
+    /* Initialize AI player service - handles audio device internally */
+    AI_PLAYER_CFG_T cfg = {.sample = 16000, .datebits = 16, .channel = 1};
+    rt = tuya_ai_player_service_init(&cfg);
+    if (rt != OPRT_OK) {
+        PR_WARN("Failed to init player service: %d", rt);
+        return;
+    }
+
+    /* Create player instance */
+    rt = tuya_ai_player_create(AI_PLAYER_MODE_FOREGROUND, &sg_player);
+    if (rt != OPRT_OK) {
+        PR_WARN("Failed to create player: %d", rt);
+        return;
+    }
+
+    /* Create playlist */
+    AI_PLAYLIST_CFG_T cfg2 = {.auto_play = false, .capacity = 1};
+    rt = tuya_ai_playlist_create(sg_player, &cfg2, &sg_playlist);
+    if (rt != OPRT_OK) {
+        PR_WARN("Failed to create playlist: %d", rt);
+        return;
+    }
+
+    /* Subscribe to player state events */
+    rt = tal_event_subscribe(EVENT_AI_PLAYER_STATE, "ai_player", __audio_player_event, SUBSCRIBE_TYPE_NORMAL);
+    if (rt != OPRT_OK) {
+        PR_WARN("Failed to subscribe to player events: %d", rt);
+    }
+
+    /* Set initial volume */
+    tuya_ai_player_set_volume(sg_player, 100);
+
+    PR_NOTICE("Audio system initialized");
+}
+
+/**
+ * @brief Play sound asynchronously
+ */
+static void __play_sound(const BYTE_T *sound_data, uint32_t sound_size)
+{
+    OPERATE_RET rt = OPRT_OK;
+
+    if (sg_player == NULL || sound_data == NULL || sound_size == 0) {
+        return;
+    }
+
+    /* Ensure player has time to initialize */
+    tal_system_sleep(10);
+
+    /* Set volume to maximum (100) for better audibility */
+    tuya_ai_player_set_volume(sg_player, 100);
+
+    /* Start player in memory mode for MP3 */
+    rt = tuya_ai_player_start(sg_player, AI_PLAYER_SRC_MEM, NULL, AI_AUDIO_CODEC_MP3);
+    if (rt != OPRT_OK) {
+        PR_DEBUG("Failed to start player: %d", rt);
+        return;
+    }
+
+    /* Feed all audio data at once */
+    rt = tuya_ai_player_feed(sg_player, (uint8_t *)sound_data, sound_size);
+    if (rt != OPRT_OK) {
+        PR_DEBUG("Failed to feed audio data: %d", rt);
+        return;
+    }
+
+    /* Send end-of-stream marker */
+    tuya_ai_player_feed(sg_player, NULL, 0);
+
+    PR_NOTICE("Playing audio: %u bytes, volume: 100", sound_size);
+}
+
+/**
+ * @brief Button event callbacks for TDL button management
+ */
+static void __btn_event_red(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc)
+{
+    PR_DEBUG("Red button event: %s, event=%u", name, event);
+    __play_sound(shot_sound, SHOT_SOUND_SIZE);
+    __btn_cb(SHOT_RED);
+}
+
+static void __btn_event_green(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc)
+{
+    PR_DEBUG("Green button event: %s, event=%u", name, event);
+    __play_sound(shot_sound, SHOT_SOUND_SIZE);
+    __btn_cb(SHOT_GREEN);
+}
+
+static void __btn_event_blue(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *argc)
+{
+    PR_DEBUG("Blue button event: %s, event=%u", name, event);
+    __play_sound(shot_sound, SHOT_SOUND_SIZE);
+    __btn_cb(SHOT_BLUE);
+}
+
+/**
+ * @brief Button callback (ISR context - 中断处理)
+ */
+static void __attribute__((unused)) __btn_cb(ShotType_t shot_type)
+{
+    /* 线程安全：直接赋值 volatile 变量 */
+    s_pending_shot = shot_type;
+}
+
+/**
+ * @brief Create bullet at bottom
+ */
+static void __create_bullet(ShotType_t shot_type)
+{
+    if (shot_type == SHOT_NONE) return;
+
+    for (int i = 0; i < GAME_MAX_BULLETS; i++) {
+        if (!s_bullets[i].active) {
+            s_bullets[i].pos = GAME_FIELD_START;
+            s_bullets[i].color = shot_type - 1;  /* 0=R, 1=G, 2=B */
+            s_bullets[i].active = 1;
+            PR_DEBUG("Bullet created: pos=%u color=%u", s_bullets[i].pos, s_bullets[i].color);
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Create shell (explosion effect)
+ */
+static void __create_shell(uint32_t pos)
+{
+    for (int i = 0; i < GAME_MAX_BLOCKS; i++) {
+        if (!s_blocks[i].active) {
+            s_blocks[i].pos = pos;
+            s_blocks[i].color = 0;
+            s_blocks[i].active = 1;
+            s_blocks[i].is_shell = 1;
+            s_flash[0] = s_flash[1] = s_flash[2] = 1;
+            s_flash_start_ms = tal_system_get_millisecond();
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Move bullets upward
+ */
+static void __move_bullets(void)
+{
+    for (int i = 0; i < GAME_MAX_BULLETS; i++) {
+        if (s_bullets[i].active) {
+            if (s_bullets[i].pos < LED_PIXELS_TOTAL_NUM - 1) {
+                s_bullets[i].pos++;
+            } else {
+                s_bullets[i].active = 0;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Drop blocks downward
+ */
+static void __fall_blocks(void)
+{
+    for (int i = 0; i < GAME_MAX_BLOCKS; i++) {
+        if (s_blocks[i].active && !s_blocks[i].is_shell) {
+            if (s_blocks[i].pos > GAME_FIELD_START) {
+                s_blocks[i].pos--;
+            } else {
+                /* Block reached flame zone */
+                s_blocks[i].active = 0;
+                s_game_state.lives--;
+                PR_WARN("Life lost! Remaining: %u", s_game_state.lives);
+                if (s_game_state.lives == 0) {
+                    s_game_state.game_over = 1;
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief Spawn new block at top
+ */
+static void __spawn_block(void)
+{
+    for (int i = 0; i < GAME_MAX_BLOCKS; i++) {
+        if (!s_blocks[i].active) {
+            s_blocks[i].pos = LED_PIXELS_TOTAL_NUM - 1;
+            s_blocks[i].color = tal_system_get_millisecond() % 3;  /* Random RGB */
+            s_blocks[i].active = 1;
+            s_blocks[i].is_shell = 0;
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Check collisions between bullets and blocks
+ */
+static void __check_collisions(void)
+{
+    for (int b = 0; b < GAME_MAX_BULLETS; b++) {
+        if (!s_bullets[b].active) continue;
+
+        for (int blk = 0; blk < GAME_MAX_BLOCKS; blk++) {
+            if (!s_blocks[blk].active) continue;
+
+            /* 同位置碰撞检测 */
+            if (s_bullets[b].pos == s_blocks[blk].pos) {
+                if (s_bullets[b].color == s_blocks[blk].color) {
+                    /* 面色匹配 - 消除 */
+                    s_blocks[blk].active = 0;
+                    s_bullets[b].active = 0;
+                    s_game_state.score += GAME_SCORE_PER_HIT * (s_game_state.combo + 1);
+                    s_game_state.combo++;
+                    __play_sound(success_sound, SUCCESS_SOUND_SIZE);  /* 成功音效 */
+                    PR_INFO("Hit! Score: %u, Combo: %u", s_game_state.score, s_game_state.combo);
+                } else {
+                    /* 面色不匹配 - 生成壳弹 */
+                    s_blocks[blk].active = 0;
+                    s_bullets[b].active = 0;
+                    __create_shell(s_blocks[blk].pos);
+                    s_game_state.score -= GAME_SCORE_PENALTY;
+                    s_game_state.combo = 0;
+                    __play_sound(error_sound, ERROR_SOUND_SIZE);  /* 错误音效 */
+                    PR_DEBUG("Mismatch! Creating shell at %u", s_blocks[blk].pos);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief Check if level should increase
+ */
+static void __check_level_up(void)
+{
+    uint32_t new_level = (s_game_state.score / GAME_LEVEL_UP_SCORE) + 1;
+    if (new_level > GAME_MAX_LEVEL) new_level = GAME_MAX_LEVEL;
+
+    if (new_level != s_game_state.level) {
+        s_game_state.level = new_level;
+        PR_NOTICE("Level Up! Level: %u", s_game_state.level);
+    }
+}
+
+/**
+ * @brief Render LED strip
+ */
+static void __render_strip(void)
+{
+    /* Clear strip */
+    tdl_pixel_set_single_color(sg_pixels_handle, 0, LED_PIXELS_TOTAL_NUM, (PIXEL_COLOR_T *)&cCOLOR_BLACK);
+
+    /* Render flame zone (索引 0-2) */
+    uint32_t now = tal_system_get_millisecond();
+    if ((now - s_flash_start_ms) < GAME_FLASH_DURATION_MS) {
+        /* 碰撞闪烁 - 白色 */
+        tdl_pixel_set_single_color(sg_pixels_handle, 0, GAME_FIELD_START, (PIXEL_COLOR_T *)&cCOLOR_WHITE);
+    } else {
+        /* 平时暗黄 */
+        PIXEL_COLOR_T dim = cCOLOR_WHITE;
+        dim.red /= 2;
+        dim.green /= 2;
+        dim.blue /= 2;
+        tdl_pixel_set_single_color(sg_pixels_handle, 0, GAME_FIELD_START, &dim);
+    }
+
+    /* Render blocks */
+    for (int i = 0; i < GAME_MAX_BLOCKS; i++) {
+        if (s_blocks[i].active) {
+            PIXEL_COLOR_T block_color;
+            if (s_blocks[i].is_shell) {
+                /* 壳弹 - 闪烁特效 */
+                block_color = (s_flash[0] || s_flash[1] || s_flash[2]) ? cCOLOR_WHITE : cCOLOR_BLACK;
+            } else {
+                /* 普通块 */
+                if (s_blocks[i].color == 0) block_color = cCOLOR_RED;
+                else if (s_blocks[i].color == 1) block_color = cCOLOR_GREEN;
+                else block_color = cCOLOR_BLUE;
+            }
+            tdl_pixel_set_single_color(sg_pixels_handle, s_blocks[i].pos, 1, &block_color);
+        }
+    }
+
+    /* Render bullets - 更亮显示 */
+    for (int i = 0; i < GAME_MAX_BULLETS; i++) {
+        if (s_bullets[i].active) {
+            PIXEL_COLOR_T bullet_color;
+            if (s_bullets[i].color == 0) bullet_color = cCOLOR_RED;
+            else if (s_bullets[i].color == 1) bullet_color = cCOLOR_GREEN;
+            else bullet_color = cCOLOR_BLUE;
+            tdl_pixel_set_single_color(sg_pixels_handle, s_bullets[i].pos, 1, &bullet_color);
+        }
+    }
+
+    /* Refresh display */
+    tdl_pixel_dev_refresh(sg_pixels_handle);
+}
+
+/**
+ * @brief Reset game state
+ */
+static void __reset_game(void)
+{
+    memset(s_blocks, 0, sizeof(s_blocks));
+    memset(s_bullets, 0, sizeof(s_bullets));
+
+    s_game_state.score = 0;
+    s_game_state.combo = 0;
+    s_game_state.level = 1;
+    s_game_state.lives = GAME_MAX_LIVES;
+    s_game_state.game_over = 0;
+    s_game_state.game_started = 1;
+
+    s_last_bullet_ms = tal_system_get_millisecond();
+    s_last_fall_ms = tal_system_get_millisecond();
+    s_last_spawn_ms = tal_system_get_millisecond();
+    s_last_render_ms = tal_system_get_millisecond();
+    s_last_display_ms = tal_system_get_millisecond();
+
+    PR_NOTICE("Game reset!");
+}
+
+/**
+ * @brief Game over sequence
+ */
+static void __game_over_sequence(void)
+{
+    PR_WARN("Game Over! Final Score: %u", s_game_state.score);
+
+    /* Flash red */
+    for (int flash = 0; flash < 3; flash++) {
+        tdl_pixel_set_single_color(sg_pixels_handle, 0, LED_PIXELS_TOTAL_NUM, (PIXEL_COLOR_T *)&cCOLOR_RED);
+        tdl_pixel_dev_refresh(sg_pixels_handle);
+        tal_system_sleep(200);
+
+        tdl_pixel_set_single_color(sg_pixels_handle, 0, LED_PIXELS_TOTAL_NUM, (PIXEL_COLOR_T *)&cCOLOR_BLACK);
+        tdl_pixel_dev_refresh(sg_pixels_handle);
+        tal_system_sleep(200);
+    }
+}
+
+/**
+ * @brief Wait for restart input
+ */
+static void __wait_for_restart(void)
+{
+    /* Show pulsing white */
+    uint8_t brightness = 0;
+    while (s_pending_shot == SHOT_NONE) {
+        brightness = (brightness + 1) % 256;
+        PIXEL_COLOR_T pulse = cCOLOR_WHITE;
+        pulse.red = brightness;
+        pulse.green = brightness;
+        pulse.blue = brightness;
+        tdl_pixel_set_single_color(sg_pixels_handle, 0, LED_PIXELS_TOTAL_NUM, &pulse);
+        tdl_pixel_dev_refresh(sg_pixels_handle);
+        tal_system_sleep(10);
+    }
+
+    s_pending_shot = SHOT_NONE;
+}
+
+/**
+ * @brief Main game loop
+ */
+static void __game_loop(void)
+{
+    uint32_t now;
+
+    uint32_t spawn_interval = s_level_config[s_game_state.level - 1].spawn_interval;
+    uint32_t fall_interval = s_level_config[s_game_state.level - 1].fall_interval;
+
+    while (!s_game_state.game_over) {
+        now = tal_system_get_millisecond();
+
+        /* Process shot input */
+        if (s_pending_shot != SHOT_NONE) {
+            __create_bullet(s_pending_shot);
+            s_pending_shot = SHOT_NONE;
+        }
+
+        /* Move bullets */
+        if (now - s_last_bullet_ms >= GAME_BULLET_SPEED_MS) {
+            __move_bullets();
+            __check_collisions();
+            s_last_bullet_ms = now;
+        }
+
+        /* Fall blocks */
+        if (now - s_last_fall_ms >= fall_interval) {
+            __fall_blocks();
+            s_last_fall_ms = now;
+        }
+
+        /* Spawn new block */
+        if (now - s_last_spawn_ms >= spawn_interval) {
+            __spawn_block();
+            s_last_spawn_ms = now;
+        }
+
+        /* Check level up */
+        __check_level_up();
+
+        /* Render */
+        if (now - s_last_render_ms >= GAME_RENDER_INTERVAL_MS) {
+            __render_strip();
+            s_last_render_ms = now;
+        }
+
+        /* Update HUD every 300ms */
+        if (now - s_last_display_ms >= GAME_DISPLAY_UPDATE_MS) {
+            PR_INFO("Score: %u | Combo: %u | Level: %u | Lives: %u",
+                    s_game_state.score, s_game_state.combo,
+                    s_game_state.level, s_game_state.lives);
+            s_last_display_ms = now;
+        }
+
+        tal_system_sleep(1);
+    }
+}
+
+/**
+ * @brief Main game entry point
+ */
+static void __game_shooter_run(void)
+{
+    __pixel_init();
+    __audio_init();
+    __buttons_init();
+
+    while (1) {
+        __reset_game();
+        __game_loop();
+        __game_over_sequence();
+        __wait_for_restart();
+    }
+}
+
+
+/**
+ * @brief user_main - Application entry point
+ */
+void user_main(void)
+{
+    /* Initialize logging */
+    tal_log_init(TAL_LOG_LEVEL_DEBUG, 4096, (TAL_LOG_OUTPUT_CB)tkl_log_output);
+
+    PR_NOTICE("=== Color Shooter Game ===");
+    PR_NOTICE("Project name:        %s", PROJECT_NAME);
+    PR_NOTICE("App version:         %s", PROJECT_VERSION);
+    PR_NOTICE("Compile time:        %s", __DATE__);
+    PR_NOTICE("TuyaOpen version:    %s", OPEN_VERSION);
+    PR_NOTICE("Platform:            %s (Chip: %s)", PLATFORM_BOARD, PLATFORM_CHIP);
+    PR_NOTICE("LED Strip Config:    %u pixels, Resolution: %u", LED_PIXELS_TOTAL_NUM, COLOR_RESOLUTION);
+
+    /* Initialize board hardware */
+    board_register_hardware();
+
+    /* Start game */
+    __game_shooter_run();
+}
+
+#if OPERATING_SYSTEM == SYSTEM_LINUX
+void main(int argc, char *argv[])
+{
+    user_main();
+
+    while (1) {
+        tal_system_sleep(500);
+    }
+}
+#else
+
+/* Tuya thread handle */
+static THREAD_HANDLE ty_app_thread = NULL;
+
+/**
+ * @brief  task thread
+ *
+ * @param[in] arg:Parameters when creating a task
+ * @return none
+ */
+static void tuya_app_thread(void *arg)
+{
+    (void)arg;
+    user_main();
+
+    tal_thread_delete(ty_app_thread);
+    ty_app_thread = NULL;
+}
+
+void tuya_app_main(void)
+{
+    /*create example task*/
+    THREAD_CFG_T thrd_param = {0};
+    thrd_param.stackDepth = 1024 * 4;
+    thrd_param.priority = THREAD_PRIO_1;
+    thrd_param.thrdname = "tuya_app_main";
+
+    tal_thread_create_and_start(&ty_app_thread, NULL, NULL, tuya_app_thread, NULL, &thrd_param);
+}
+#endif

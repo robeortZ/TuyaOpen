@@ -1,0 +1,35 @@
+menu "Buddy Pixel Configuration"
+
+config BUDDY_WIFI_SSID
+    string "WiFi SSID"
+    default "your_wifi_ssid"
+    help
+      WiFi network SSID to connect to.
+
+config BUDDY_WIFI_PASSWORD
+    string "WiFi Password"
+    default "your_wifi_password"
+    help
+      WiFi network password.
+
+config BUDDY_BRIDGE_HOST
+    string "Bridge server host/IP"
+    default "192.168.1.100"
+    help
+      IP address or hostname of the buddy-bridge PC server.
+
+config BUDDY_BRIDGE_PORT
+    int "Bridge server port"
+    default 8765
+    range 1024 65535
+    help
+      TCP port of the buddy-bridge HTTP server.
+
+config BUDDY_POLL_INTERVAL_MS
+    int "State poll interval (ms)"
+    default 500
+    range 100 5000
+    help
+      How often the device polls the bridge for state updates.
+
+endmenu

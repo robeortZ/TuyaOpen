@@ -1,0 +1,21 @@
+##
+# @file Kconfig
+# @brief Kconfig for tuya_t5_eink_badge_template app
+##
+
+menu "Tuya T5 E-Ink Badge Template Configuration"
+
+    config APP_NAME
+        string "Application name"
+        default "tuya_t5_eink_badge_template"
+        help
+            Application name for the badge template
+
+    config APP_VERSION
+        string "Application version"
+        default "1.0.0"
+        help
+            Application version string
+
+endmenu
+

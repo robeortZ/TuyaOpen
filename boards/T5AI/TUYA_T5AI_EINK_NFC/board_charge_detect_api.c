@@ -13,6 +13,7 @@
 #include "tkl_adc.h"
 #include "tkl_output.h"
 #include "board_charge_detect_api.h"
+#include "tal_log.h"
 
 /***********************************************************
 ************************macro define************************
@@ -41,84 +42,84 @@ static TUYA_ADC_BASE_CFG_T sg_battery_adc_cfg;
 ***********************function define**********************
 ***********************************************************/
 
-// /**
-//  * @brief Internal interrupt callback for charge detect GPIO
-//  */
-// static void __charge_detect_irq_cb(void *args)
-// {
-//     OPERATE_RET          rt = OPRT_OK;
-//     TUYA_GPIO_LEVEL_E    level;
-//     BOARD_CHARGE_STATE_E state;
+/**
+ * @brief Internal interrupt callback for charge detect GPIO
+ */
+static void __charge_detect_irq_cb(void *args)
+{
+    OPERATE_RET          rt = OPRT_OK;
+    TUYA_GPIO_LEVEL_E    level;
+    BOARD_CHARGE_STATE_E state;
 
-//     if (NULL == sg_charge_detect_cb) {
-//         return;
-//     }
+    if (NULL == sg_charge_detect_cb) {
+        return;
+    }
 
-//     // Read the current GPIO level to determine charge state
-//     rt = tkl_gpio_read(BOARD_CHARGE_DETECT_PIN, &level);
-//     if (OPRT_OK != rt) {
-//         return;
-//     }
+    // Read the current GPIO level to determine charge state
+    rt = tkl_gpio_read(BOARD_CHARGE_DETECT_PIN, &level);
+    if (OPRT_OK != rt) {
+        return;
+    }
 
-//     // Determine charge state based on GPIO level
-//     // Assuming: HIGH = plugged, LOW = unplugged (adjust based on hardware)
-//     state = (level == TUYA_GPIO_LEVEL_HIGH) ? BOARD_CHARGE_STATE_PLUGGED : BOARD_CHARGE_STATE_UNPLUGGED;
+    // Determine charge state based on GPIO level
+    // Assuming: HIGH = plugged, LOW = unplugged (adjust based on hardware)
+    state = (level == TUYA_GPIO_LEVEL_HIGH) ? BOARD_CHARGE_STATE_PLUGGED : BOARD_CHARGE_STATE_UNPLUGGED;
 
-//     // Call user callback
-//     if (sg_charge_detect_cb != NULL) {
-//         sg_charge_detect_cb(state, sg_charge_detect_arg);
-//     }
-// }
+    // Call user callback
+    if (sg_charge_detect_cb != NULL) {
+        sg_charge_detect_cb(state, sg_charge_detect_arg);
+    }
+}
 
-// OPERATE_RET board_charge_detect_init(void)
-// {
-//     OPERATE_RET          rt = OPRT_OK;
-//     TUYA_GPIO_BASE_CFG_T gpio_cfg;
-//     TUYA_GPIO_IRQ_T      irq_cfg;
+OPERATE_RET board_charge_detect_init(void)
+{
+    OPERATE_RET          rt = OPRT_OK;
+    TUYA_GPIO_BASE_CFG_T gpio_cfg;
+    TUYA_GPIO_IRQ_T      irq_cfg;
 
-//     if (sg_charge_detect_initialized) {
-//         return OPRT_OK;
-//     }
+    if (sg_charge_detect_initialized) {
+        return OPRT_OK;
+    }
 
-//     // Initialize GPIO as input with pull-up (adjust based on hardware)
-//     gpio_cfg.direct = TUYA_GPIO_INPUT;
-//     gpio_cfg.mode   = TUYA_GPIO_PULLUP; // Pull-up to detect falling edge when charger plugs in
-//     gpio_cfg.level  = TUYA_GPIO_LEVEL_HIGH;
+    // Initialize GPIO as input with pull-up (adjust based on hardware)
+    gpio_cfg.direct = TUYA_GPIO_INPUT;
+    gpio_cfg.mode   = TUYA_GPIO_PULLUP; // Pull-up to detect falling edge when charger plugs in
+    gpio_cfg.level  = TUYA_GPIO_LEVEL_HIGH;
 
-//     rt = tkl_gpio_init(BOARD_CHARGE_DETECT_PIN, &gpio_cfg);
-//     if (OPRT_OK != rt) {
-//         PR_ERR("Failed to initialize charge detect GPIO: %d", rt);
-//         return rt;
-//     }
+    rt = tkl_gpio_init(BOARD_CHARGE_DETECT_PIN, &gpio_cfg);
+    if (OPRT_OK != rt) {
+        PR_ERR("Failed to initialize charge detect GPIO: %d", rt);
+        return rt;
+    }
 
-//     // Try to configure interrupt for falling edge (when charger plugs in, assuming pull-up)
-//     // Use FALL edge only as RISE_FALL may not be supported on this platform
-//     // If interrupt setup fails, we can still use polling via board_charge_detect_get_state()
-//     irq_cfg.mode = TUYA_GPIO_IRQ_FALL; // Detect falling edge (charger plug in)
-//     irq_cfg.cb   = __charge_detect_irq_cb;
-//     irq_cfg.arg  = NULL;
+    // Try to configure interrupt for falling edge (when charger plugs in, assuming pull-up)
+    // Use FALL edge only as RISE_FALL may not be supported on this platform
+    // If interrupt setup fails, we can still use polling via board_charge_detect_get_state()
+    irq_cfg.mode = TUYA_GPIO_IRQ_FALL; // Detect falling edge (charger plug in)
+    irq_cfg.cb   = __charge_detect_irq_cb;
+    irq_cfg.arg  = NULL;
 
-//     rt = tkl_gpio_irq_init(BOARD_CHARGE_DETECT_PIN, &irq_cfg);
-//     if (OPRT_OK != rt) {
-//         PR_WARN("Charge detect GPIO interrupt not supported (error %d), will use polling mode", rt);
-//         // Continue without interrupt - polling mode is still available via board_charge_detect_get_state()
-//         sg_charge_detect_initialized = TRUE;
-//         return OPRT_OK; // Return OK so system can continue
-//     }
+    rt = tkl_gpio_irq_init(BOARD_CHARGE_DETECT_PIN, &irq_cfg);
+    if (OPRT_OK != rt) {
+        PR_WARN("Charge detect GPIO interrupt not supported (error %d), will use polling mode", rt);
+        // Continue without interrupt - polling mode is still available via board_charge_detect_get_state()
+        sg_charge_detect_initialized = TRUE;
+        return OPRT_OK; // Return OK so system can continue
+    }
 
-//     // Enable interrupt
-//     rt = tkl_gpio_irq_enable(BOARD_CHARGE_DETECT_PIN);
-//     if (OPRT_OK != rt) {
-//         PR_WARN("Failed to enable charge detect interrupt: %d, will use polling mode", rt);
-//         tkl_gpio_irq_disable(BOARD_CHARGE_DETECT_PIN);
-//         // Continue without interrupt - polling mode is still available
-//         sg_charge_detect_initialized = TRUE;
-//         return OPRT_OK; // Return OK so system can continue
-//     }
+    // Enable interrupt
+    rt = tkl_gpio_irq_enable(BOARD_CHARGE_DETECT_PIN);
+    if (OPRT_OK != rt) {
+        PR_WARN("Failed to enable charge detect interrupt: %d, will use polling mode", rt);
+        tkl_gpio_irq_disable(BOARD_CHARGE_DETECT_PIN);
+        // Continue without interrupt - polling mode is still available
+        sg_charge_detect_initialized = TRUE;
+        return OPRT_OK; // Return OK so system can continue
+    }
 
-//     sg_charge_detect_initialized = TRUE;
-//     return rt;
-// }
+    sg_charge_detect_initialized = TRUE;
+    return rt;
+}
 
 OPERATE_RET board_charge_detect_register_callback(BOARD_CHARGE_DETECT_CB cb, void *arg)
 {
